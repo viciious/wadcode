@@ -25,6 +25,13 @@ class CommandCompile(BaseCommand):
 	def __init__(self, cmd, args):
 		BaseCommand.__init__(self, cmd, args)
 
-		wadfile = WADFile.create_from_directory(args.indir)
-		wadfile.write(args.outfile)
+		endian = "<"
+		if args.big_endian:
+			endian = ">"
+		wadtype = b"IWAD"
+		if args.pwad:
+			wadtype = b"PWAD"
+
+		wadfile = WADFile.create_from_directory(args.indir, endian)
+		wadfile.write(args.outfile, wadtype)
 

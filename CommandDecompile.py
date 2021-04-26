@@ -25,5 +25,12 @@ class CommandDecompile(BaseCommand):
 	def __init__(self, cmd, args):
 		BaseCommand.__init__(self, cmd, args)
 
-		wadfile = WADFile.create_from_file(args.infile)
-		wadfile.write_to_directory(args.outdir, decode = not self._args.no_unpack)
+		endian = "<"
+		if args.big_endian:
+			endian = ">"
+		wadtype = b"IWAD"
+		if args.pwad:
+			wadtype = b"PWAD"
+
+		wadfile = WADFile.create_from_file(args.infile, endian, wadtype)
+		wadfile.write_to_directory(args.outdir)
