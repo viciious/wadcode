@@ -71,13 +71,20 @@ class WADFile():
 		n = 0
 		while True:
 			if getidbyte == 0:
+				if n == len(data):
+					break
 				idbyte = data[n]
 				n = n + 1
 			getidbyte = (getidbyte + 1) & 7
 
+			if n == len(data):
+				break
 			n = n + 1
+
 			if idbyte & 1 != 0:
 				# decompress
+				if n == len(data):
+					break
 				blen = (data[n] & 0xf)+1
 				n = n + 1
 				if blen == 1:
@@ -105,7 +112,7 @@ class WADFile():
 				if compressed:
 					data = data[:cls.compressed_length(data)]
 				f.seek(cur_pos)
-				resource = cls._WADResource(name = name, data = data, size = size)
+				resource = cls._WADResource(name = name, data = data, size = size, compressed = compressed)
 				wadfile.add_resource(resource)
 		return wadfile
 
