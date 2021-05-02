@@ -42,7 +42,7 @@ class Filenames():
 				return name
 
 class WADFile():
-	_WADResource = collections.namedtuple("WADResource", [ "name", "data", "size", "compressed" ])
+	_WADResource = collections.namedtuple("WADResource", [ "name", "data", "size", "compressed", "compressed_size" ])
 
 	def __init__(self, struct_extra = "<"):
 		self._WAD_HEADER = NamedStruct((
@@ -92,7 +92,7 @@ class WADFile():
 	def create_from_file(cls, filename, endian, wadtype):
 		wadfile = cls(endian)
 		with open(filename, "rb") as f:
-			mm = mmap.mmap(f.fileno(), 0, prot=mmap.PROT_READ)
+			mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_COPY)
 
 			header = wadfile._WAD_HEADER.unpack(mm[0:])
 			assert(header.magic == wadtype)
@@ -106,10 +106,17 @@ class WADFile():
 				name = fileinfo.name.rstrip(b"\x00").decode("latin1")
 				compressed = ord(name[0]) & 0x80 != 0
 				size = fileinfo.size
-				end = fileinfo.offset + size
-				data = mm[fileinfo.offset:end]
+				compressed_size = size
 
-				resource = cls._WADResource(name = name, data = data, size = size, compressed = compressed)
+				data = mm[fileinfo.offset:]
+				if compressed:
+					name = chr(ord(name[0]) & ~0x80) + name[1:]
+					compressed_size = cls.compressed_length(data)
+					data = data[:compressed_size]
+				else:
+					data = data[:size]
+
+				resource = cls._WADResource(name = name, data = data, size = size, compressed = compressed, compressed_size = compressed_size)
 				wadfile.add_resource(resource)
 
 			mm.close()
@@ -132,9 +139,11 @@ class WADFile():
 					data = f.read()
 
 			compressed = False
+			compressed_size = 0
 			if "compressed" in resource_info:
 				compressed = True
-			resource = cls._WADResource(name = resource_info["name"], data = data, size = size, compressed = compressed)
+				compressed_size = resource_info["compressed_size"]
+			resource = cls._WADResource(name = resource_info["name"], data = data, size = size, compressed = compressed, compressed_size = compressed_size)
 			wadfile.add_resource(resource)
 		return wadfile
 
@@ -160,16 +169,15 @@ class WADFile():
 				encoder = None
 				if resource.name == ".":
 					template = "." + prev_resource.name.lower()
-				elif resource.compressed:
-					resource_item["compressed"] = True
-					resource_item["name"] = chr(ord(resource.name[0]) & ~0x80) + resource.name[1:]
-					template = resource_item["name"].lower()
 				else:
 					template = resource.name.lower()
 					
 				filename = fns.generate(template, extension)
 				resource_item["filename"] = filename
 				resource_item["size"] = resource.size
+				if resource.compressed:
+					resource_item["compressed"] = resource.compressed
+					resource_item["compressed_size"] = resource.compressed_size
 				write_data = resource.data
 
 				full_outname = "%s/files/%s" % (outdir, filename)
