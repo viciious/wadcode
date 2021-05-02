@@ -104,6 +104,8 @@ class WADFile():
 				offset += size
 
 				name = fileinfo.name.rstrip(b"\x00").decode("latin1")
+				if len(name) == 0:
+					name = "."
 				compressed = ord(name[0]) & 0x80 != 0
 				size = fileinfo.size
 				compressed_size = size
