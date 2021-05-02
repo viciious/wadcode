@@ -24,6 +24,7 @@ import json
 import collections
 import contextlib
 import sys
+import mmap
 from NamedStruct import NamedStruct
 
 class Filenames():
@@ -71,20 +72,14 @@ class WADFile():
 		n = 0
 		while True:
 			if getidbyte == 0:
-				if n == len(data):
-					break
 				idbyte = data[n]
 				n = n + 1
 			getidbyte = (getidbyte + 1) & 7
 
-			if n == len(data):
-				break
 			n = n + 1
 
 			if idbyte & 1 != 0:
 				# decompress
-				if n == len(data):
-					break
 				blen = (data[n] & 0xf)+1
 				n = n + 1
 				if blen == 1:
@@ -97,23 +92,27 @@ class WADFile():
 	def create_from_file(cls, filename, endian, wadtype):
 		wadfile = cls(endian)
 		with open(filename, "rb") as f:
-			header = wadfile._WAD_HEADER.unpack_from_file(f)
+			mm = mmap.mmap(f.fileno(), 0, prot=mmap.PROT_READ)
+
+			header = wadfile._WAD_HEADER.unpack(mm[0:])
 			assert(header.magic == wadtype)
 
-			f.seek(header.directory_offset)
+			offset = header.directory_offset
 			for fileno in range(header.number_of_files):
-				fileinfo = wadfile._FILE_ENTRY.unpack_from_file(f)
+				size = wadfile._FILE_ENTRY.size
+				fileinfo = wadfile._FILE_ENTRY.unpack(mm[offset:offset+size])
+				offset += size
+
 				name = fileinfo.name.rstrip(b"\x00").decode("latin1")
 				compressed = ord(name[0]) & 0x80 != 0
-				cur_pos = f.tell()
-				f.seek(fileinfo.offset)
 				size = fileinfo.size
-				data = f.read(fileinfo.size)
-				if compressed:
-					data = data[:cls.compressed_length(data)]
-				f.seek(cur_pos)
+				end = fileinfo.offset + size
+				data = mm[fileinfo.offset:end]
+
 				resource = cls._WADResource(name = name, data = data, size = size, compressed = compressed)
 				wadfile.add_resource(resource)
+
+			mm.close()
 		return wadfile
 
 	@classmethod
@@ -161,7 +160,7 @@ class WADFile():
 				encoder = None
 				if resource.name == ".":
 					template = "." + prev_resource.name.lower()
-				elif ord(resource.name[0]) & 0x80:
+				elif resource.compressed:
 					resource_item["compressed"] = True
 					resource_item["name"] = chr(ord(resource.name[0]) & ~0x80) + resource.name[1:]
 					template = resource_item["name"].lower()

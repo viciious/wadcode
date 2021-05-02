@@ -37,15 +37,9 @@ class NamedStruct(object):
 		return self._struct.pack(*fields)
 
 	def unpack(self, data):
-		values = self._struct.unpack(data)
+		values = self._struct.unpack(data[:self._struct.size])
 		fields = self._collection(*values)
 		return fields
 
 	def unpack_head(self, data):
 		return self.unpack(data[:self._struct.size])
-
-	def unpack_from_file(self, f, at_offset = None):
-		if at_offset is not None:
-			f.seek(at_offset)
-		data = f.read(self._struct.size)
-		return self.unpack(data)
