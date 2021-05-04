@@ -1,3 +1,4 @@
+#!/usr/bin/python3
 #	wadcode - WAD compiler/decompiler for WAD resource files
 #	Copyright (C) 2019-2019 Johannes Bauer
 #
@@ -18,19 +19,16 @@
 #
 #	Johannes Bauer <JohannesBauer@gmx.de>
 
-from BaseCommand import BaseCommand
-from WADFile import WADFile
+import sys
+from CommandCombine import CommandCombine
+from MultiCommand import MultiCommand
 
-class CommandDecompile(BaseCommand):
-	def __init__(self, cmd, args):
-		BaseCommand.__init__(self, cmd, args)
+mc = MultiCommand()
 
-		endian = "<"
-		if args.big_endian:
-			endian = ">"
-		wadtype = b"IWAD"
-		if args.pwad:
-			wadtype = b"PWAD"
+def genparser(parser):
+	parser.add_argument("wad32x", metavar = "wadfile", type = str, help = "")
+	parser.add_argument("wadjag", metavar = "wadfile", type = str, help = "")
+	parser.add_argument("wadout", metavar = "wadfile", type = str, help = "")
+mc.register("combine", "Compile a WAD file from resources", genparser, action = CommandCombine)
 
-		wadfile = WADFile.create_from_file(args.infile, endian, wadtype, False)
-		wadfile.write_to_directory(args.outdir)
+mc.run(sys.argv[1:])

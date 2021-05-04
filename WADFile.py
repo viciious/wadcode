@@ -66,30 +66,64 @@ class WADFile():
 
 	@classmethod
 	def compressed_length(cls, data):
-		getidbyte = 0
-		idbyte = 0
+		compbits = 0
+		compbitslen = 0
 
 		n = 0
 		while True:
-			if getidbyte == 0:
-				idbyte = data[n]
+			if compbitslen == 0:
+				compbits = data[n]
+				compbitslen = 8
 				n = n + 1
-			getidbyte = (getidbyte + 1) & 7
 
 			n = n + 1
-
-			if idbyte & 1 != 0:
+			if compbits & 1 != 0:
 				# decompress
-				blen = (data[n] & 0xf)+1
+				blen = (data[n] & 0xF)+1
 				n = n + 1
 				if blen == 1:
 					break
-			idbyte = idbyte >> 1
+
+			compbits = compbits >> 1
+			compbitslen = compbitslen - 1
 
 		return n
 
 	@classmethod
-	def create_from_file(cls, filename, endian, wadtype):
+	def decompress_data(cls, data):
+		compbits = 0
+		compbitslen = 0
+
+		n = 0
+		out = bytearray()
+		while True:
+			if compbitslen == 0:
+				compbits = data[n]
+				compbitslen = 8
+				n += 1
+
+			if compbits & 1 != 0:
+				# decompress
+				bpos = (data[n] << 4) | (data[n+1] >> 4)
+				blen = data[n+1] & 0xF
+				if blen == 0:
+					break
+
+				bpos = len(out) - bpos - 1
+				for i in range(blen + 1):
+					out.append(out[bpos+i])
+				n += 2
+			else:
+				out.append(data[n])
+				n += 1
+
+			compbits = compbits >> 1
+			compbitslen = compbitslen - 1
+
+		return out
+
+	@classmethod
+	def create_from_file(cls, filename, endian, wadtype, decompress):
 		wadfile = cls(endian)
 		with open(filename, "rb") as f:
 			mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_COPY)
@@ -106,15 +140,21 @@ class WADFile():
 				name = fileinfo.name.rstrip(b"\x00").decode("latin1")
 				if len(name) == 0:
 					name = "."
-				compressed = ord(name[0]) & 0x80 != 0
+					compressed = False
+				else:
+					compressed = ord(name[0]) & 0x80 != 0
 				size = fileinfo.size
 				compressed_size = size
 
 				data = mm[fileinfo.offset:]
 				if compressed:
 					name = chr(ord(name[0]) & ~0x80) + name[1:]
-					compressed_size = cls.compressed_length(data)
-					data = data[:compressed_size]
+					if decompress:
+						data = cls.decompress_data(data)
+						compressed = False
+					else:
+						compressed_size = cls.compressed_length(data)
+						data = data[:compressed_size]
 				else:
 					data = data[:size]
 
@@ -155,7 +195,6 @@ class WADFile():
 		output_json_filename = outdir + "/content.json"
 		output_json = [ ]
 
-		lvl_regex = re.compile("E\dM\d")
 		fns = Filenames()
 		section = None
 		prev_resource = None
