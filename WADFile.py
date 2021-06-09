@@ -123,13 +123,16 @@ class WADFile():
 		return out
 
 	@classmethod
-	def create_from_file(cls, filename, endian, wadtype, decompress):
+	def create_from_file(cls, filename, endian, wadtype, decompress_sprites = False, decompress_other = False):
 		wadfile = cls(endian)
 		with open(filename, "rb") as f:
 			mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_COPY)
 
 			header = wadfile._WAD_HEADER.unpack(mm[0:])
 			assert(header.magic == wadtype)
+
+			is_sprite = True
+			is_demo = False
 
 			offset = header.directory_offset
 			for fileno in range(header.number_of_files):
@@ -145,10 +148,23 @@ class WADFile():
 					compressed = ord(name[0]) & 0x80 != 0
 				size = fileinfo.size
 				compressed_size = size
+				if compressed:
+					name = chr(ord(name[0]) & ~0x80) + name[1:]
+
+				if name == "T_START":
+					is_sprite = False
+				if "DEMO" in name:
+					is_demo = True
 
 				data = mm[fileinfo.offset:]
 				if compressed:
-					name = chr(ord(name[0]) & ~0x80) + name[1:]
+					if is_sprite:
+						decompress = decompress_sprites
+					elif is_demo:
+						decompress = True
+					else:
+						decompress = decompress_other
+
 					if decompress:
 						data = cls.decompress_data(data)
 						compressed = False

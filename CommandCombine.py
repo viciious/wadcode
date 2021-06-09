@@ -30,7 +30,7 @@ class CommandCombine(BaseCommand):
 		BaseCommand.__init__(self, cmd, args)
 
 		wad32x = WADFile.create_from_file(args.wad32x, ">", b"IWAD", False)
-		wadjag = WADFile.create_from_file(args.wadjag, ">", b"IWAD", True)
+		wadjag = WADFile.create_from_file(args.wadjag, ">", b"IWAD", True, False)
 		outwad = WADFile(">")
 
 		resource = WADFile._WADResource(name = "S_START", data = b"", size = 0, compressed = False, compressed_size = 0)
@@ -52,6 +52,13 @@ class CommandCombine(BaseCommand):
 					outwad.add_resource(resource)
 					copy = True
 					continue
+				if resource.name == "F_END":
+					copy = True
+					continue
+
+			if resource.name == "TEXTURE1":
+				copy = False
+				continue
 
 			if not copy:
 				continue
