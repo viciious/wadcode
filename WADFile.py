@@ -131,14 +131,15 @@ class WADFile():
 			header = wadfile._WAD_HEADER.unpack(mm[0:])
 			assert(header.magic == wadtype)
 
-			is_sprite = True
-			is_demo = False
-
 			offset = header.directory_offset
 			for fileno in range(header.number_of_files):
 				size = wadfile._FILE_ENTRY.size
 				fileinfo = wadfile._FILE_ENTRY.unpack(mm[offset:offset+size])
 				offset += size
+
+				is_sprite = True
+				is_demo = False
+				is_stbar = False
 
 				name = fileinfo.name.rstrip(b"\x00").decode("latin1")
 				if len(name) == 0:
@@ -153,15 +154,17 @@ class WADFile():
 
 				if name == "T_START":
 					is_sprite = False
+				if name == "STBAR":
+					is_stbar = True
 				if "DEMO" in name:
 					is_demo = True
 
 				data = mm[fileinfo.offset:]
 				if compressed:
-					if is_sprite:
-						decompress = decompress_sprites
-					elif is_demo:
+					if is_demo or is_stbar:
 						decompress = True
+					elif is_sprite:
+						decompress = decompress_sprites
 					else:
 						decompress = decompress_other
 
