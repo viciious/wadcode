@@ -22,6 +22,7 @@
 import sys
 from CommandCompile import CommandCompile
 from CommandDecompile import CommandDecompile
+from CommandCombine import CommandCombine
 from MultiCommand import MultiCommand
 
 mc = MultiCommand()
@@ -41,5 +42,11 @@ def genparser(parser):
 	parser.add_argument("infile", metavar = "wadfile", type = str, help = "Input WAD file that is decompiled.")
 	parser.add_argument("outdir", metavar = "directory", type = str, help = "Input directory in which WAD resources are written.")
 mc.register("decompile", "Decompile a WAD file into its resources", genparser, action = CommandDecompile)
+
+def genparser(parser):
+	parser.add_argument("wad32x", metavar = "wadfile", type = str, help = "Input 32x WAD file that is decompiled.")
+	parser.add_argument("wadjag", metavar = "wadfile", type = str, help = "Input Jag WAD file that is decompiled.")
+	parser.add_argument("wadout", metavar = "wadfile", type = str, help = "Output WAD file that is created after combining.")
+mc.register("combine", "Combine 32x and Jaguar Doom WADs into one", genparser, action = CommandCombine)
 
 mc.run(sys.argv[1:])
