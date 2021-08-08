@@ -131,13 +131,14 @@ class WADFile():
 			header = wadfile._WAD_HEADER.unpack(mm[0:])
 			assert(header.magic == wadtype)
 
+			is_sprite = True
+
 			offset = header.directory_offset
 			for fileno in range(header.number_of_files):
 				size = wadfile._FILE_ENTRY.size
 				fileinfo = wadfile._FILE_ENTRY.unpack(mm[offset:offset+size])
 				offset += size
 
-				is_sprite = True
 				is_demo = False
 				is_stbar = False
 
