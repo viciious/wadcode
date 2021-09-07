@@ -57,7 +57,6 @@ class CommandCombine(BaseCommand):
 					continue
 
 				if resource.name == "DEMO1" or resource.name == "DEMO2":
-					outwad.add_resource(resource)
 					continue
 
 			if resource.name == "TEXTURE1":
