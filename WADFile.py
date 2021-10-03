@@ -162,7 +162,7 @@ class WADFile():
 
 				data = mm[fileinfo.offset:]
 				if compressed:
-					if is_demo or is_stbar:
+					if is_stbar:
 						decompress = True
 					elif is_sprite:
 						decompress = decompress_sprites
