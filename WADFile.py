@@ -42,7 +42,7 @@ class Filenames():
 				return name
 
 class WADFile():
-	_WADResource = collections.namedtuple("WADResource", [ "name", "data", "size", "compressed", "compressed_size" ])
+	_WADResource = collections.namedtuple("WADResource", [ "name", "data", "compressed" ])
 
 	def __init__(self, struct_extra = "<"):
 		self._WAD_HEADER = NamedStruct((
@@ -178,7 +178,7 @@ class WADFile():
 				else:
 					data = data[:size]
 
-				resource = cls._WADResource(name = name, data = data, size = size, compressed = compressed, compressed_size = compressed_size)
+				resource = cls._WADResource(name = name, data = data, compressed = compressed)
 				wadfile.add_resource(resource)
 
 			mm.close()
@@ -192,20 +192,14 @@ class WADFile():
 			content = json.load(f)
 
 		for resource_info in content:
-			size = 0
 			if resource_info.get("virtual") is True:
 				data = b""
 			else:
-				size = resource_info["size"]
 				with open(dirname + "/files/" + resource_info["filename"], "rb") as f:
 					data = f.read()
 
-			compressed = False
-			compressed_size = 0
-			if "compressed" in resource_info:
-				compressed = True
-				compressed_size = resource_info["compressed_size"]
-			resource = cls._WADResource(name = resource_info["name"], data = data, size = size, compressed = compressed, compressed_size = compressed_size)
+			compressed = "compressed" in resource_info
+			resource = cls._WADResource(name = resource_info["name"], data = data, compressed = compressed)
 			wadfile.add_resource(resource)
 		return wadfile
 
@@ -235,10 +229,8 @@ class WADFile():
 					
 				filename = fns.generate(template, extension)
 				resource_item["filename"] = filename
-				resource_item["size"] = resource.size
 				if resource.compressed:
 					resource_item["compressed"] = resource.compressed
-					resource_item["compressed_size"] = resource.compressed_size
 				write_data = resource.data
 
 				full_outname = "%s/files/%s" % (outdir, filename)
@@ -263,13 +255,6 @@ class WADFile():
 			f.write(header)
 
 			for resource in self._resources:
-				if len(resource.data) > 0:
-					if resource.compressed:
-						if resource.compressed_size != len(resource.data):
-							raise ValueError("%s compressed size mismatch: %s != %s" % (resource.name, resource.compressed_size, len(resource.data)))
-					else:
-						if resource.size != len(resource.data):
-							raise ValueError("%s size mismatch: %s != %s" % (resource.name, resource.size, len(resource.data)))
 
 				data_len = len(resource.data)
 				if data_len > 0:
@@ -285,9 +270,13 @@ class WADFile():
 					name = chr(ord(name[0]) | 0x80) + name[1:]
 				name = name.encode("latin1")
 
+				size = len(resource.data)
+				if size > 0 and resource.compressed:
+					size = len(self.__class__.decompress_data(resource.data))
+
 				file_entry = self._FILE_ENTRY.pack({
 					"offset":	data_offset,
-					"size":		resource.size,
+					"size":		size,
 					"name":		name,
 				})
 				f.write(file_entry)
