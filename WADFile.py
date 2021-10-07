@@ -263,6 +263,14 @@ class WADFile():
 			f.write(header)
 
 			for resource in self._resources:
+				if len(resource.data) > 0:
+					if resource.compressed:
+						if resource.compressed_size != len(resource.data):
+							raise ValueError("%s compressed size mismatch: %s != %s" % (resource.name, resource.compressed_size, len(resource.data)))
+					else:
+						if resource.size != len(resource.data):
+							raise ValueError("%s size mismatch: %s != %s" % (resource.name, resource.size, len(resource.data)))
+
 				data_len = len(resource.data)
 				if data_len > 0:
 					f.write(resource.data)
