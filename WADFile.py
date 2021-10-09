@@ -144,7 +144,6 @@ class WADFile():
 
 				name = fileinfo.name.rstrip(b"\x00").decode("latin1")
 				if len(name) == 0:
-					name = "."
 					compressed = False
 				else:
 					compressed = ord(name[0]) & 0x80 != 0
@@ -198,8 +197,12 @@ class WADFile():
 				with open(dirname + "/files/" + resource_info["filename"], "rb") as f:
 					data = f.read()
 
+			name = ""
+			if "name" in resource_info:
+				name = resource_info["name"]
+
 			compressed = "compressed" in resource_info
-			resource = cls._WADResource(name = resource_info["name"], data = data, compressed = compressed)
+			resource = cls._WADResource(name = name, data = data, compressed = compressed)
 			wadfile.add_resource(resource)
 		return wadfile
 
@@ -222,7 +225,8 @@ class WADFile():
 			else:
 				extension = ""
 				encoder = None
-				if resource.name == ".":
+				if resource.name == "" or resource.name == ".":
+					del resource_item["name"]
 					template = "." + prev_resource.name.lower()
 				else:
 					template = resource.name.lower()
@@ -265,9 +269,12 @@ class WADFile():
 
 			data_offset = self._WAD_HEADER.size
 			for resource in self._resources:
-				name = resource.name
-				if resource.compressed:
-					name = chr(ord(name[0]) | 0x80) + name[1:]
+				if resource.name == "":
+					name = "."
+				else:
+					name = resource.name
+					if resource.compressed:
+						name = chr(ord(name[0]) | 0x80) + name[1:]
 				name = name.encode("latin1")
 
 				size = len(resource.data)
