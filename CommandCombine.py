@@ -33,14 +33,14 @@ class CommandCombine(BaseCommand):
 		wadjag = WADFile.create_from_file(args.wadjag, ">", b"IWAD", True, False)
 		outwad = WADFile(">")
 
-		resource = WADFile._WADResource(name = "S_START", data = b"", size = 0, compressed = False, compressed_size = 0)
+		resource = WADFile._WADResource(name = "S_START", data = b"", compressed = False)
 		outwad.add_resource(resource)
 
 		copy = True
 		for resource in wadjag._resources:
 			if len(resource.data) == 0:
 				if resource.name == "T_START":
-					resource = WADFile._WADResource(name = "S_END", data = b"", size = 0, compressed = False, compressed_size = 0)
+					resource = WADFile._WADResource(name = "S_END", data = b"", compressed = False)
 					outwad.add_resource(resource)
 					copy = False
 					continue
