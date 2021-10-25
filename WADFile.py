@@ -249,7 +249,7 @@ class WADFile():
 		with open(output_json_filename, "w") as f:
 			json.dump(output_json, fp = f, indent = 4, sort_keys = True)
 
-	def write(self, wad_filename, wadtype, ssf):
+	def write(self, wad_filename, wadtype, ssf, base_offset):
 		directory_offset = self._WAD_HEADER.size
 		with open(wad_filename, "wb") as f:
 			header = self._WAD_HEADER.pack({
@@ -285,6 +285,10 @@ class WADFile():
 					# pad to a multiple of 4
 					data_offset += (data_len + 3) & ~3 
 
+				if ssf and resource.name == "BANK7":
+					data_offset = (data_offset + base_offset + 512*1024 - 1) & ~(512*1024-1)
+
+			data_offset = directory_offset + (len(self._resources) * self._FILE_ENTRY.size)
 			for resource in self._resources:
 				data_len = len(resource.data)
 				if data_len > 0:
@@ -292,3 +296,18 @@ class WADFile():
 					# pad to a multiple of 4
 					padded_len = (data_len + 3) & ~3
 					f.write(b'\x00' * (padded_len - data_len))
+					data_len = padded_len
+
+				if ssf and resource.name == "BANK7":
+					padded_offset = (data_offset + base_offset + 512*1024 - 1) & ~(512*1024-1)
+					print("padding")
+					print(data_offset)
+					print(data_offset + base_offset)
+					print((padded_offset - data_offset))
+					f.write(b'\x00' * (padded_offset - data_offset))
+					data_len = padded_offset - data_offset
+
+				data_offset += data_len
+
+				if ssf and resource.name == "BANK7":
+					print(data_offset)

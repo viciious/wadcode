@@ -33,5 +33,5 @@ class CommandCompile(BaseCommand):
 			wadtype = b"PWAD"
 
 		wadfile = WADFile.create_from_directory(args.indir, endian)
-		wadfile.write(args.outfile, wadtype)
+		wadfile.write(args.outfile, wadtype, args.ssf, args.baseoffset)
 
