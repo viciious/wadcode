@@ -249,25 +249,17 @@ class WADFile():
 		with open(output_json_filename, "w") as f:
 			json.dump(output_json, fp = f, indent = 4, sort_keys = True)
 
-	def write(self, wad_filename, wadtype):
+	def write(self, wad_filename, wadtype, ssf):
+		directory_offset = self._WAD_HEADER.size
 		with open(wad_filename, "wb") as f:
 			header = self._WAD_HEADER.pack({
 				"magic":			wadtype,
 				"number_of_files":	len(self._resources),
-				"directory_offset":	0,
+				"directory_offset":	self._WAD_HEADER.size,
 			})
 			f.write(header)
 
-			for resource in self._resources:
-
-				data_len = len(resource.data)
-				if data_len > 0:
-					f.write(resource.data)
-					# pad to a multiple of 4
-					padded_len = (data_len + 3) & ~3
-					f.write(b'\x00' * (padded_len - data_len))
-
-			data_offset = self._WAD_HEADER.size
+			data_offset = directory_offset + (len(self._resources) * self._FILE_ENTRY.size)
 			for resource in self._resources:
 				if resource.name == "":
 					name = "."
@@ -293,10 +285,10 @@ class WADFile():
 					# pad to a multiple of 4
 					data_offset += (data_len + 3) & ~3 
 
-		with open(wad_filename, "r+b") as f:
-			header = self._WAD_HEADER.pack({
-				"magic":			wadtype,
-				"number_of_files":	len(self._resources),
-				"directory_offset":	data_offset,
-			})
-			f.write(header)
+			for resource in self._resources:
+				data_len = len(resource.data)
+				if data_len > 0:
+					f.write(resource.data)
+					# pad to a multiple of 4
+					padded_len = (data_len + 3) & ~3
+					f.write(b'\x00' * (padded_len - data_len))
