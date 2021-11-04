@@ -286,7 +286,7 @@ class WADFile():
 					data_offset += (data_len + 3) & ~3 
 
 				if ssf and resource.name == "BANK7":
-					data_offset = (data_offset + base_offset + 512*1024 - 1) & ~(512*1024-1)
+					data_offset = 512*1024 * round((data_offset + 512*1024 - 1) / (512*1024)) - base_offset
 
 			data_offset = directory_offset + (len(self._resources) * self._FILE_ENTRY.size)
 			for resource in self._resources:
@@ -299,15 +299,10 @@ class WADFile():
 					data_len = padded_len
 
 				if ssf and resource.name == "BANK7":
-					padded_offset = (data_offset + base_offset + 512*1024 - 1) & ~(512*1024-1)
-					print("padding")
-					print(data_offset)
-					print(data_offset + base_offset)
-					print((padded_offset - data_offset))
+					padded_offset = 512*1024 * round((data_offset + 512*1024 - 1) / (512*1024)) - base_offset
+					print("BANK7 waste: %s " % (padded_offset - data_offset))
 					f.write(b'\x00' * (padded_offset - data_offset))
 					data_len = padded_offset - data_offset
+					print("next offset %s" % (data_offset + data_len))
 
 				data_offset += data_len
-
-				if ssf and resource.name == "BANK7":
-					print(data_offset)
