@@ -1,0 +1,60 @@
+#!/usr/bin/python3
+
+import sys
+
+def readu16(f):
+    return int.from_bytes(f.read(2), "little", signed=False)
+
+def readu32(f):
+    return int.from_bytes(f.read(4), "little", signed=False)
+
+def readu8(f):
+    return int.from_bytes(f.read(1), "little", signed=False)
+
+def writebu16(f, v):
+    f.write(v.to_bytes(2, "big", signed=False))
+
+def patch2jagobj(fin, fout):
+    with open(fin, "rb") as f:
+        width = readu16(f)
+        height = readu16(f)
+
+        readu32(f) # offs
+
+        columnofs = []
+        for i in range(width):
+            columnofs.append(readu32(f))
+
+        data = bytearray(width * height)
+        
+        for i in range(width):
+            coloff = columnofs[i]
+
+            f.seek(coloff)
+            while True:
+                topdelta = readu8(f)
+                if topdelta == 255:
+                    break
+                length = readu8(f)
+                readu8(f)
+
+                if length == 0:
+                    break
+
+                for j in range(length):
+                    data[(topdelta+j)*width+i] = readu8(f)
+                readu8(f)
+
+        with open(fout, "wb") as fo:
+            writebu16(fo, width)
+            writebu16(fo, height)
+            writebu16(fo, 3) # depth
+            writebu16(fo, 0) # trans index
+            writebu16(fo, 0) # pad
+            writebu16(fo, 0) # pad
+            writebu16(fo, 0) # pad
+            writebu16(fo, 0) # pad
+            fo.write(data)
+
+patch2jagobj(sys.argv[1], sys.argv[2])
+
