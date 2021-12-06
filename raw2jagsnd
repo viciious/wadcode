@@ -1,0 +1,22 @@
+#!/usr/bin/python3
+
+import sys
+
+def writebu32(f, v):
+    f.write(v.to_bytes(4, "big", signed=False))
+
+def raw2jagsnd(fin, fout):
+    with open(fin, "rb") as f:
+        samples = f.read()
+
+        with open(fout, "wb") as o:
+            writebu32(o, len(samples)) # samples
+            writebu32(o, 0) # loop start
+            writebu32(o, len(samples)) # loop end
+            writebu32(o, 1) # info
+            writebu32(o, 0) # unity
+            writebu32(o, 128) # pitch_correction
+            writebu32(o, 0) # decay_step
+            o.write(samples)
+
+raw2jagsnd(sys.argv[1], sys.argv[2])
