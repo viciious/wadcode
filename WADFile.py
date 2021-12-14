@@ -18,6 +18,7 @@
 #
 #	Johannes Bauer <JohannesBauer@gmx.de>
 
+import enum
 import os
 import re
 import json
@@ -25,6 +26,7 @@ import collections
 import contextlib
 import sys
 import mmap
+import math
 from NamedStruct import NamedStruct
 
 class Filenames():
@@ -42,7 +44,31 @@ class Filenames():
 				return name
 
 class WADFile():
-	_WADResource = collections.namedtuple("WADResource", [ "name", "data", "compressed" ])
+	class _WADResource:
+		def __init__(self, **kwargs):
+			self.name = kwargs.pop("name", "")
+			self.data = kwargs.pop("data", b"")
+			self.compressed = kwargs.pop("compressed", False)
+			self.group = kwargs.pop("group", None)
+
+		def padded_size(self):
+			size = 0
+			if len(self.data) > 0:
+				size = len(self.data)
+				if len(self.data) & 3:
+					# pad to a multiple of 4
+					size += 4 - len(self.data) & 3
+			return size
+
+	class _WADLump:
+		def __init__(self, **kwargs):
+			self.name = kwargs.pop("name", "")
+			self.data = kwargs.pop("data", b"")
+			self.size = kwargs.pop("size", 0)
+			self.offset = kwargs.pop("offset", 0)
+			self.pad = kwargs.pop("pad", 0)
+
+	_maplumps = ["things", "linedefs", "sidedefs", "vertexes", "segs", "ssectors", "nodes", "sectors", "reject", "blockmap"]
 
 	def __init__(self, struct_extra = "<"):
 		self._WAD_HEADER = NamedStruct((
@@ -59,10 +85,14 @@ class WADFile():
 
 		self._resources = [ ]
 		self._resources_by_name = collections.defaultdict(list)
+		self._mus_by_map = {}
 
 	def add_resource(self, resource):
 		self._resources.append(resource)
 		self._resources_by_name[resource.name].append(resource)
+
+	def add_map(self, mapname, mus):
+		self._mus_by_map[mapname] = mus
 
 	@classmethod
 	def compressed_length(cls, data):
@@ -139,7 +169,6 @@ class WADFile():
 				fileinfo = wadfile._FILE_ENTRY.unpack(mm[offset:offset+size])
 				offset += size
 
-				is_demo = False
 				is_stbar = False
 
 				name = fileinfo.name.rstrip(b"\x00").decode("latin1")
@@ -156,8 +185,6 @@ class WADFile():
 					is_sprite = False
 				if name == "STBAR":
 					is_stbar = True
-				if "DEMO" in name:
-					is_demo = True
 
 				data = mm[fileinfo.offset:]
 				if compressed:
@@ -177,11 +204,33 @@ class WADFile():
 				else:
 					data = data[:size]
 
-				resource = cls._WADResource(name = name, data = data, compressed = compressed)
+				resource = cls._WADResource(name = name, data = data, compressed = compressed, group = "")
 				wadfile.add_resource(resource)
 
 			mm.close()
 		return wadfile
+
+	@classmethod
+	def parse_dmapinfo(cls, wadfile, dmapinfo):
+		regex = r"([^{]+)\r?\n{\r?\n(.+?)\r?\n}"
+
+		matches = re.finditer(regex, dmapinfo, re.MULTILINE | re.DOTALL)
+		for _, match in enumerate(matches, start=1):
+			grp = match.groups()
+			cmd = grp[0].strip()
+			kvs = grp[1].strip()
+			if not cmd.startswith("map "):
+				continue
+
+			mapname = re.findall(r"map\s+\"([^\"]+)\"", cmd)
+			if not mapname:
+				continue
+
+			mus = re.findall(r"music\s*=\s*\"([^\"]+)\"", kvs)
+			if not mus:
+				continue
+
+			wadfile.add_map(mapname[0], mus[0])
 
 	@classmethod
 	def create_from_directory(cls, dirname, endian):
@@ -199,11 +248,20 @@ class WADFile():
 
 			name = ""
 			if "name" in resource_info:
-				name = resource_info["name"]
+				name = str(resource_info["name"])
+
+			if "group" in resource_info:
+				group = resource_info["group"]
+			else:
+				group = None
 
 			compressed = "compressed" in resource_info
-			resource = cls._WADResource(name = name, data = data, compressed = compressed)
+			resource = cls._WADResource(name = name, data = data, compressed = compressed, group = group)
 			wadfile.add_resource(resource)
+
+			if name.lower() == "dmapinfo":
+				cls.parse_dmapinfo(wadfile, data.decode('ascii'))
+
 		return wadfile
 
 	def write_to_directory(self, outdir):
@@ -213,18 +271,16 @@ class WADFile():
 		output_json = [ ]
 
 		fns = Filenames()
-		section = None
 		prev_resource = None
 		for resource in self._resources:
 			resource_item = {
 				"name":		resource.name,
 			}
+
 			if len(resource.data) == 0:
 				resource_item["virtual"] = True
-				section = resource.name
 			else:
 				extension = ""
-				encoder = None
 				if resource.name == "" or resource.name == ".":
 					del resource_item["name"]
 					template = "." + prev_resource.name.lower()
@@ -249,8 +305,153 @@ class WADFile():
 		with open(output_json_filename, "w") as f:
 			json.dump(output_json, fp = f, indent = 4, sort_keys = True)
 
-	def write(self, wad_filename, wadtype, ssf, base_offset):
+	@classmethod
+	def resource_lump(cls, resource, data_offset):
+		if resource.name == "":
+			name = "."
+		else:
+			name = resource.name
+			if resource.compressed:
+				name = chr(ord(name[0]) | 0x80) + name[1:]
+		name = name.encode("latin1")
+
+		size = len(resource.data)
+		if size > 0 and resource.compressed:
+			size = len(cls.decompress_data(resource.data))
+
+		data_len = len(resource.data)
+		pad = resource.padded_size() - data_len
+
+		return cls._WADLump(offset = data_offset, name = name, data = resource.data, size = size, pad = pad)
+
+	def genlumps(self, ssf, base_offset):
 		directory_offset = self._WAD_HEADER.size
+
+		_group_cache = {}
+		def group_size(group):
+			if group in _group_cache:
+				return _group_cache[group]
+
+			size = 0
+			for resource in self._resources:
+				if resource.group != group:
+					continue
+				size += resource.padded_size()
+			_group_cache[group] = size
+			return size
+
+		# assign groups to music tracks and maps that use them
+		# (unless already specified in content.json)
+		for mapname in self._mus_by_map:
+			mus = self._mus_by_map[mapname]
+
+			if len(self._resources_by_name[mus]) == 0:
+				print("Music %s is in DMAPINFO but not in WAD" % mus)
+				sys.exit(1)
+
+			resmus = self._resources_by_name[mus][0]
+			if resmus.group is None:
+				resmus.group = mus
+
+			if len(self._resources_by_name[mapname]) == 0:
+				print("Map %s is in DMAPINFO but not in WAD" % mapname)
+				sys.exit(1)
+
+			resmap = self._resources_by_name[mapname][0]
+			if resmap.group is None:
+				resmap.group = mus
+
+		# assign groups to map lumps
+		last_group = None
+		for resource in self._resources:
+			group = resource.group
+			if group is not None:
+				last_group = group
+				continue
+			if resource.name.lower() in self.__class__._maplumps:
+				resource.group = last_group
+
+		lumps = [None] * len(self._resources)
+
+		def add_resource_lump(num, resource, data_offset):
+			#print(data_offset, resource.name)
+			lump = self.__class__.resource_lump(resource, data_offset)
+			lumps[num] = lump
+
+			if ssf and resource.name == "PAGE7":
+				page7_offset = 0x380000 - base_offset - data_offset
+				if page7_offset < 0:
+					print("PAGE7 overrun: %d bytes" % page7_offset)
+					sys.exit(1)
+				#lump.pad = page7_offset
+
+			data_offset += len(lump.data) + lump.pad
+			return lump, data_offset
+
+		def map_resources(data_offset):
+			mapped_count = 0
+			lump = None
+			first_unmapped = 0
+
+			for i, resource in enumerate(self._resources):
+				if lumps[i]:
+					first_unmapped = i + 1
+					continue
+
+				size = resource.padded_size()
+				page = math.floor((base_offset + data_offset) / 0x80000)
+				if ssf:
+					group = resource.group
+					if group:
+						size = group_size(resource.group)
+
+					if size >= 0x80000:
+						print("Lump %s is too large: %s" % (resource.name, size))
+						sys.exit(1)
+
+					# do not allow lumps or groups to cross over into the next page block
+					if page >= 6:
+						end_page = math.floor((base_offset + data_offset + size) / 0x80000)
+						if page != end_page:
+							continue
+
+					if group:
+						for j, resource2 in enumerate(self._resources[first_unmapped:]):
+							if resource2.group != group:
+								continue
+							lump, data_offset = add_resource_lump(first_unmapped+j, resource2, data_offset)
+							mapped_count = mapped_count + 1
+						continue
+
+				lump, data_offset = add_resource_lump(i, resource, data_offset)
+				mapped_count = mapped_count + 1
+
+			return data_offset, mapped_count, lump
+
+		total_mapped = 0
+		data_offset = directory_offset + (len(self._resources) * self._FILE_ENTRY.size)
+
+		while True:
+			data_offset, mapped_count, last_lump = map_resources(data_offset)
+
+			total_mapped += mapped_count
+			if total_mapped == len(self._resources):
+				break
+			if not ssf:
+				break
+
+			next_page = math.floor((base_offset + data_offset + 0x7FFFF) / 0x80000)
+			pad = 0x80000 * next_page - base_offset - data_offset
+			print("Padding page %d with %d bytes" % (next_page-1, pad))
+			print("Last lump is %s" % last_lump.name)
+			last_lump.pad += pad
+			data_offset += pad
+
+		if not ssf:
+			return lumps
+		return sorted(lumps, key=lambda d: d.offset)
+
+	def write(self, wad_filename, wadtype, ssf, base_offset):
 		with open(wad_filename, "wb") as f:
 			header = self._WAD_HEADER.pack({
 				"magic":			wadtype,
@@ -259,50 +460,18 @@ class WADFile():
 			})
 			f.write(header)
 
-			data_offset = directory_offset + (len(self._resources) * self._FILE_ENTRY.size)
-			for resource in self._resources:
-				if resource.name == "":
-					name = "."
-				else:
-					name = resource.name
-					if resource.compressed:
-						name = chr(ord(name[0]) | 0x80) + name[1:]
-				name = name.encode("latin1")
+			lumps = self.genlumps(ssf, base_offset)
 
-				size = len(resource.data)
-				if size > 0 and resource.compressed:
-					size = len(self.__class__.decompress_data(resource.data))
-
+			for lump in lumps:
 				file_entry = self._FILE_ENTRY.pack({
-					"offset":	data_offset,
-					"size":		size,
-					"name":		name,
+					"offset":	lump.offset,
+					"size":		lump.size,
+					"name":		lump.name,
 				})
 				f.write(file_entry)
 
-				data_len = len(resource.data)
-				if data_len > 0:
-					# pad to a multiple of 4
-					data_offset += (data_len + 3) & ~3 
-
-				if ssf and resource.name == "BANK7":
-					data_offset = 512*1024 * round((data_offset + 512*1024 - 1) / (512*1024)) - base_offset
-
-			data_offset = directory_offset + (len(self._resources) * self._FILE_ENTRY.size)
-			for resource in self._resources:
-				data_len = len(resource.data)
-				if data_len > 0:
-					f.write(resource.data)
-					# pad to a multiple of 4
-					padded_len = (data_len + 3) & ~3
-					f.write(b'\x00' * (padded_len - data_len))
-					data_len = padded_len
-
-				if ssf and resource.name == "BANK7":
-					padded_offset = 512*1024 * round((data_offset + 512*1024 - 1) / (512*1024)) - base_offset
-					print("BANK7 waste: %s " % (padded_offset - data_offset))
-					f.write(b'\x00' * (padded_offset - data_offset))
-					data_len = padded_offset - data_offset
-					print("next offset %s" % (data_offset + data_len))
-
-				data_offset += data_len
+			for lump in lumps:
+				if len(lump.data) > 0:
+					f.write(lump.data)
+				if lump.pad > 0:
+					f.write(b'\x00' * lump.pad)
