@@ -218,7 +218,7 @@ def dithered_palette(palette):
             b = b & ~7
 
         c1 = c2 = i
-        #grey = ((0.3 * r) + (0.59 * g) + (0.11 * b))
+        grey = ((0.3 * r) + (0.59 * g) + (0.11 * b))
         #if random.randint(0, 255) < grey * 0.9:
         if True:
             if grey > 64:
