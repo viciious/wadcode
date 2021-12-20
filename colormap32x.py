@@ -64,7 +64,6 @@ def read_palette(filename):
 
 # Return closest palette entry to the given RGB triple
 
-
 def search_palette(palette, target, ignore=-1, ignore2=-1):
     """Search the given palette and find the nearest matching
        color to the given color, returning an index into the
@@ -72,8 +71,13 @@ def search_palette(palette, target, ignore=-1, ignore2=-1):
     best_diff = None
     best_index = None
 
-    def square(x):
-        return x * x
+    # https://www.compuphase.com/cmetric.htm
+    def color_distance(c1, c2):
+        rmean = ( c1[0] + c2[0] ) / 2.0
+        r = c1[0] - c2[0]
+        g = c1[1] - c2[1]
+        b = c1[2] - c2[2]
+        return math.sqrt((((512.0+rmean)*r*r) / 256.0) + 4.0*g*g + (((767-rmean)*b*b)/256.0))
 
     for i in range(len(palette)):
         if i == ignore or i <= ignore2:
@@ -81,11 +85,7 @@ def search_palette(palette, target, ignore=-1, ignore2=-1):
 
         color = palette[i]
 
-        diff = (
-            square(target[0] - color[0])
-            + square(target[1] - color[1])
-            + square(target[2] - color[2])
-        )
+        diff = color_distance(target, color)
 
         if best_index is None or diff < best_diff:
             best_diff = diff
