@@ -233,12 +233,13 @@ class WADFile():
 			wadfile.add_map(mapname[0], mus[0])
 
 	@classmethod
-	def create_from_directory(cls, dirname, endian):
+	def create_from_directory(cls, dirname, endian, tag = None):
 		wadfile = cls(endian)
 		content_json = dirname + "/content.json"
 		with open(content_json) as f:
 			content = json.load(f)
 
+		curtag = None
 		for resource_info in content:
 			if resource_info.get("virtual") is True:
 				data = b""
@@ -254,6 +255,20 @@ class WADFile():
 				group = resource_info["group"]
 			else:
 				group = None
+
+			if "tag" in resource_info:
+				curtag = resource_info["tag"]
+			else:
+				if not name.lower() in cls._maplumps:
+					curtag = None
+
+			if curtag:
+				if curtag[0] == "!":
+					if tag and curtag[1:] == tag:
+						continue
+				else:
+					if not tag or curtag != tag:
+						continue
 
 			compressed = "compressed" in resource_info
 			resource = cls._WADResource(name = name, data = data, compressed = compressed, group = group)
