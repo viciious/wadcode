@@ -312,8 +312,8 @@ for i in range(32):
 #output_colormap(generate_colormap(tinted_colors, palette))
 
 # Inverse color map for invulnerability effect.
-#inverse_colors = invert_colors(palette)
-#output_colormap(generate_colormap(inverse_colors, palette))
+inverse_colors = invert_colors(palette)
+output_colormap(generate_dithered_colormap(swap_colormap(generate_colormap(inverse_colors, palette)), dithered))
 
 # Last colormap is all black, and is actually unused in Vanilla Doom
 # (it was mistakenly included by the dcolors.c utility). It's
