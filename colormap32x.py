@@ -40,6 +40,7 @@ tint_frac = 0
 # brightness effects.
 tint_bright = 0.5
 
+dither = True
 
 def read_palette(filename):
     """Read palette from file and return a list of tuples containing
@@ -116,10 +117,17 @@ def swap_colormap(colormap):
 
 
 def generate_dithered_colormap(colormap, dithered):
+    global dither
+
     result = []
-    for c in colormap:
-        result.append(dithered[c][3])
-        result.append(dithered[c][4])
+    if dither:
+        for c in colormap:
+            result.append(dithered[c][3])
+            result.append(dithered[c][4])
+    else:
+        for c in colormap:
+            result.append(dithered[c][3])
+
     return result
 
 
@@ -198,6 +206,8 @@ def print_palette(colors):
         print()
 
 def dithered_palette(palette):
+    global dither
+
     dithered = []
     for i, c in enumerate(palette):
         # round to 32X palette
@@ -220,7 +230,7 @@ def dithered_palette(palette):
         c1 = c2 = i
         grey = ((0.3 * r) + (0.59 * g) + (0.11 * b))
         #if random.randint(0, 255) < grey * 0.9:
-        if True:
+        if dither:
             if grey > 64:
                 c1 = search_palette(palette, (r, g, b), i)
                 if not c1:
@@ -254,7 +264,7 @@ def parse_color_code(s):
 
 def set_parameter(name, value):
     """Set configuration value, from command line parameters."""
-    global dark_color, tint_color, tint_frac, tint_bright
+    global dark_color, tint_color, tint_frac, tint_bright, dither
 
     if name == "dark_color":
         dark_color = parse_color_code(value)
@@ -264,6 +274,8 @@ def set_parameter(name, value):
         tint_frac = int(value) / 100.0
     elif name == "tint_bright":
         tint_bright = float(value)
+    elif name == "dither":
+        dither = True
     else:
         raise Exception("Unknown parameter: '%s'" % name)
 
