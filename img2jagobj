@@ -1,0 +1,26 @@
+#!/usr/bin/python3
+
+import sys
+from PIL import Image
+
+def writebu16(f, v):
+    f.write(v.to_bytes(2, "big", signed=False))
+
+def patch2jagobj(fin, fout):
+    im = Image.open(fin)
+    data = im.tobytes()
+    width = im.width
+    height = im.height
+    with open(fout, "wb") as fo:
+        writebu16(fo, width)
+        writebu16(fo, height)
+        writebu16(fo, 3) # depth
+        writebu16(fo, 0) # trans index
+        writebu16(fo, 0) # pad
+        writebu16(fo, 0) # pad
+        writebu16(fo, 0) # pad
+        writebu16(fo, 0) # pad
+        fo.write(data)
+
+patch2jagobj(sys.argv[1], sys.argv[2])
+
