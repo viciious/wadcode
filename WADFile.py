@@ -195,12 +195,16 @@ class WADFile():
 					else:
 						decompress = decompress_other
 
-					if decompress:
-						data = cls.decompress_data(data)
-						compressed = False
-					else:
-						compressed_size = cls.compressed_length(data)
-						data = data[:compressed_size]
+					try:
+						if decompress:
+							data = cls.decompress_data(data)
+							compressed = False
+						else:
+							compressed_size = cls.compressed_length(data)
+							data = data[:compressed_size]
+					except:
+						print ("Error decompressing file %s" % name)
+						raise
 				else:
 					data = data[:size]
 
@@ -332,7 +336,11 @@ class WADFile():
 
 		size = len(resource.data)
 		if size > 0 and resource.compressed:
-			size = len(cls.decompress_data(resource.data))
+			try:
+				size = len(cls.decompress_data(resource.data))
+			except:
+				print ("Error decompressing file %s" % name)
+				raise
 
 		data_len = len(resource.data)
 		pad = resource.padded_size() - data_len
