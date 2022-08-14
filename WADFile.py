@@ -394,6 +394,19 @@ class WADFile():
 			if resource.name.lower() in self.__class__._maplumps:
 				resource.group = last_group
 
+		# assign groups to sprites
+		s_start = [i for i, x in enumerate(self._resources) if x.name == "S_START"][0]
+		s_end = [i for i, x in enumerate(self._resources) if x.name == "S_END"][0]
+
+		i = 0
+		while i < s_end-1-(s_start+1):
+			res1 = self._resources[s_start+1+i]
+			if res1.group:
+				continue
+			res1.group = res1.name
+			self._resources[s_start+1+i+1].group = res1.name
+			i += 2
+
 		lumps = [None] * len(self._resources)
 
 		def add_resource_lump(num, resource, data_offset):
@@ -414,6 +427,7 @@ class WADFile():
 		def map_resources(data_offset):
 			mapped_count = 0
 			lump = None
+			first_lump = None
 			first_unmapped = 0
 
 			for i, resource in enumerate(self._resources):
@@ -436,6 +450,9 @@ class WADFile():
 					if page >= 6:
 						end_page = math.floor((base_offset + data_offset + size) / 0x80000)
 						if page != end_page:
+							# do not shuffle sprite lumps
+							if first_unmapped >= s_start and first_unmapped < s_end:
+								break
 							continue
 
 					if group:
@@ -443,19 +460,28 @@ class WADFile():
 							if resource2.group != group:
 								continue
 							lump, data_offset = add_resource_lump(first_unmapped+j, resource2, data_offset)
+							if first_lump is None:
+								first_lump = lump
 							mapped_count = mapped_count + 1
 						continue
 
+				# do not shuffle sprite lumps
+				if first_unmapped >= s_start and first_unmapped < s_end:
+					if i >= s_end:
+						break
+
 				lump, data_offset = add_resource_lump(i, resource, data_offset)
+				if first_lump is None:
+					first_lump = lump
 				mapped_count = mapped_count + 1
 
-			return data_offset, mapped_count, lump
+			return data_offset, mapped_count, lump, first_lump
 
 		total_mapped = 0
 		data_offset = directory_offset + (len(self._resources) * self._FILE_ENTRY.size)
 
 		while True:
-			data_offset, mapped_count, last_lump = map_resources(data_offset)
+			data_offset, mapped_count, last_lump, first_lump = map_resources(data_offset)
 
 			total_mapped += mapped_count
 			if total_mapped == len(self._resources):
@@ -466,6 +492,7 @@ class WADFile():
 			next_page = math.floor((base_offset + data_offset + 0x7FFFF) / 0x80000)
 			pad = 0x80000 * next_page - base_offset - data_offset
 			print("Padding page %d with %d bytes" % (next_page-1, pad))
+			print("First lump is %s" % first_lump.name)
 			print("Last lump is %s" % last_lump.name)
 			last_lump.pad += pad
 			data_offset += pad
