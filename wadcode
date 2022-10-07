@@ -34,6 +34,7 @@ def genparser(parser):
 	parser.add_argument("--ssf", action = "store_true", default = 0, help = "Enable Sega Mapper support for BANK7.")
 	parser.add_argument("--baseoffset", default = 0, type = int, help = "Base offset for WAD when Sega Mapper is enabled.")
 	parser.add_argument("--tag", default = None, type = str, help = "Resource tag.")
+	parser.add_argument("--musgroups", action = "store_true", help = "Group music and map lumps together.")
 	parser.add_argument("indir", metavar = "directory", type = str, help = "Input directory that should be compiled to a WAD.")
 	parser.add_argument("outfile", metavar = "wadfile", type = str, help = "Output WAD file that is created after compilation.")
 mc.register("compile", "Compile a WAD file from resources", genparser, action = CommandCompile)

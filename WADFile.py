@@ -347,7 +347,7 @@ class WADFile():
 
 		return cls._WADLump(offset = data_offset, name = name, data = resource.data, size = size, pad = pad)
 
-	def genlumps(self, ssf, base_offset):
+	def genlumps(self, ssf, base_offset, musgroups):
 		directory_offset = self._WAD_HEADER.size
 
 		_group_cache = {}
@@ -372,9 +372,10 @@ class WADFile():
 				print("Music %s is in DMAPINFO but not in WAD" % mus)
 				sys.exit(1)
 
-			resmus = self._resources_by_name[mus][0]
-			if resmus.group is None:
-				resmus.group = mus
+			if musgroups:
+				resmus = self._resources_by_name[mus][0]
+				if resmus.group is None:
+					resmus.group = mus
 
 			if len(self._resources_by_name[mapname]) == 0:
 				print("Map %s is in DMAPINFO but not in WAD" % mapname)
@@ -382,7 +383,10 @@ class WADFile():
 
 			resmap = self._resources_by_name[mapname][0]
 			if resmap.group is None:
-				resmap.group = mus
+				if musgroups:
+					resmap.group = mus
+				else:
+					resmap.group = mapname
 
 		# assign groups to map lumps
 		last_group = None
@@ -406,6 +410,12 @@ class WADFile():
 			res1.group = res1.name
 			self._resources[s_start+1+i+1].group = res1.name
 			i += 2
+
+		t_start = [i for i, x in enumerate(self._resources) if x.name == "T_START"][0]
+		t_end = [i for i, x in enumerate(self._resources) if x.name == "T_END"][0]
+
+		f_start = [i for i, x in enumerate(self._resources) if x.name == "F_START"][0]
+		f_end = [i for i, x in enumerate(self._resources) if x.name == "F_END"][0]
 
 		lumps = [None] * len(self._resources)
 
@@ -447,7 +457,7 @@ class WADFile():
 						sys.exit(1)
 
 					# do not allow lumps or groups to cross over into the next page block
-					if page >= 6:
+					if page >= 5:
 						end_page = math.floor((base_offset + data_offset + size) / 0x80000)
 						if page != end_page:
 							# do not shuffle sprite lumps
@@ -470,6 +480,16 @@ class WADFile():
 					if i >= s_end:
 						break
 
+				# do not shuffle texture lumps
+				if first_unmapped >= t_start and first_unmapped < t_end:
+					if i >= t_end:
+						break
+
+				# do not shuffle flat lumps
+				if first_unmapped >= f_start and first_unmapped < f_end:
+					if i >= f_end:
+						break
+
 				lump, data_offset = add_resource_lump(i, resource, data_offset)
 				if first_lump is None:
 					first_lump = lump
@@ -481,6 +501,7 @@ class WADFile():
 		data_offset = directory_offset + (len(self._resources) * self._FILE_ENTRY.size)
 
 		while True:
+			start_offset = data_offset
 			data_offset, mapped_count, last_lump, first_lump = map_resources(data_offset)
 
 			total_mapped += mapped_count
@@ -492,8 +513,8 @@ class WADFile():
 			next_page = math.floor((base_offset + data_offset + 0x7FFFF) / 0x80000)
 			pad = 0x80000 * next_page - base_offset - data_offset
 			print("Padding page %d with %d bytes" % (next_page-1, pad))
-			print("First lump is %s" % first_lump.name)
-			print("Last lump is %s" % last_lump.name)
+			print("First lump is %s at %X" % (first_lump.name, base_offset+start_offset))
+			print("Last lump is %s " % last_lump.name)
 			last_lump.pad += pad
 			data_offset += pad
 
@@ -501,7 +522,7 @@ class WADFile():
 			return lumps
 		return sorted(lumps, key=lambda d: d.offset)
 
-	def write(self, wad_filename, wadtype, ssf, base_offset):
+	def write(self, wad_filename, wadtype, ssf, base_offset, musgroups):
 		with open(wad_filename, "wb") as f:
 			header = self._WAD_HEADER.pack({
 				"magic":			wadtype,
@@ -510,7 +531,7 @@ class WADFile():
 			})
 			f.write(header)
 
-			lumps = self.genlumps(ssf, base_offset)
+			lumps = self.genlumps(ssf, base_offset, musgroups)
 
 			for lump in lumps:
 				file_entry = self._FILE_ENTRY.pack({
