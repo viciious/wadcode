@@ -307,6 +307,9 @@ class WADFile():
 					template = resource.name.lower()
 					
 				filename = fns.generate(template, extension)
+				if ".." in filename:
+					continue
+
 				resource_item["filename"] = filename
 				if resource.compressed:
 					resource_item["compressed"] = resource.compressed
