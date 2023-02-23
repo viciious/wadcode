@@ -1,0 +1,241 @@
+#!/usr/bin/python3
+import json
+import sys
+import mmap
+import struct
+import os
+from NamedStruct import NamedStruct
+from io import BytesIO
+
+MIPLEVELS = 4
+
+class Texture1():
+    def __init__(self, struct_extra = "<"):
+        self.entries = []
+        self.patches = []
+
+        self._MAP_PATCH = NamedStruct((
+            ("h", "originx"),
+            ("h", "originy"),
+            ("h", "patch"),
+            ("h", "stepdir"),
+            ("h", "colormap"),
+            ), struct_extra)
+
+        self._TEXTURE1_ENTRY = NamedStruct((
+            ("8s", "name"),
+            ("l", "masked"),
+            ("h", "width"),
+            ("h", "height"),   
+            ("l", "columndirectory"),
+            ("h", "patchcount"),
+        ), struct_extra)
+
+    @classmethod
+    def create_from_lump(cls, data):
+        texture1 = cls("<")
+        entrysize = texture1._TEXTURE1_ENTRY.size
+        patchsize = texture1._MAP_PATCH.size
+        numtextures = struct.unpack("<I", data[0:4])[0]
+
+        for i in range(numtextures):
+            offset = struct.unpack("<I", data[(4+i*4):(4+i*4)+4])[0]
+            entry = texture1._TEXTURE1_ENTRY.unpack(data[offset:offset+entrysize])
+            offset += entrysize
+
+            for _ in range(entry.patchcount):
+                patch = texture1._MAP_PATCH.unpack(data[offset:offset+patchsize])
+                texture1.patches.append(patch)
+                offset += patchsize
+
+            texture1.entries.append(entry)
+            i = i + 1
+
+        return texture1
+
+def decompress_data(data):
+    compbits = 0
+    compbitslen = 0
+
+    n = 0
+    out = bytearray()
+    while True:
+        if compbitslen == 0:
+            compbits = data[n]
+            compbitslen = 8
+            n += 1
+
+        if compbits & 1 != 0:
+            # decompress
+            bpos = (data[n] << 4) | (data[n+1] >> 4)
+            blen = data[n+1] & 0xF
+            if blen == 0:
+                break
+
+            bpos = len(out) - bpos - 1
+            for i in range(blen + 1):
+                out.append(out[bpos+i])
+            n += 2
+        else:
+            out.append(data[n])
+            n += 1
+
+        compbits = compbits >> 1
+        compbitslen = compbitslen - 1
+
+    return out
+
+dirname = sys.argv[1]
+with open(os.path.join(dirname, "content.json")) as f:
+	content = json.load(f)
+
+dirname = os.path.join(dirname, "files")
+tex1name = os.path.join(dirname, "TEXTURE1")
+palname = os.path.join(dirname, "PLAYPALS")
+
+def sqcolordist(rgb1, rgb2):
+    ravg = (rgb1[0] + rgb2[0]) / 2
+    r = rgb1[0] - rgb2[0]
+    g = rgb1[1] - rgb2[1]
+    b = rgb1[2] - rgb2[2]
+    return (((512 + ravg) * r *r )/256) + 4 * g * g + (((767 - ravg)*b*b)/256)
+
+def colormatch(r, g, b, d8to24, d24to8):
+    c = r + (g<<8) + (b<<16)
+    if c in d24to8:
+        return d24to8[c]
+
+    best = 0
+    bestd = 0x1000000
+
+    for j in range(256):
+        d = sqcolordist((r, g, b), d8to24[j])
+        if d < bestd:
+            best = j
+            bestd = d
+
+    d15to8[c] = best
+    return best
+
+def swaprowcol(indata, width, height):
+    outdata = bytearray()
+
+    for i in range(height):
+        for j in range(width):
+            outdata.append(indata[j*height+i])
+
+    return outdata
+
+def noswaprowcol(indata, width, height):
+    return indata
+
+def genmip(indata, width, height, d8to24, d15to8):
+    outwidth = width >> 1
+    outheight = height >> 1
+    outdata = bytearray()
+
+    inp = 0
+
+    for i in range(outheight):
+        if i * 2 + 1 < height:
+            nextofs = inp + width
+        else:
+            nextofs = inp
+
+        n = 0
+        for j in range(outwidth):
+            if j * 2  + 1 < width:
+                p1 = indata[inp+n]
+                p2 = indata[inp+n+1]
+                p3 = indata[nextofs+n]
+                p4 = indata[nextofs+n+1]
+            else:
+                p1 = indata[inp+n]
+                p2 = indata[inp+n]
+                p3 = indata[nextofs+n]
+                p4 = indata[nextofs+n]
+
+            p1 = d8to24[p1]
+            p2 = d8to24[p2]
+            p3 = d8to24[p3]
+            p4 = d8to24[p4]
+
+            r = p1[0] + p2[0] + p3[0] + p4[0]
+            g = p1[1] + p2[1] + p3[1] + p4[1]
+            b = p1[2] + p2[2] + p3[2] + p4[2]
+
+            r = (r >> 2) & 0xff
+            g = (g >> 2) & 0xff
+            b = (b >> 2) & 0xff
+
+            outdata.append(colormatch(r, g, b, d8to24, d15to8))
+            n = n + 2
+
+        inp = inp + width*2
+
+    return (outdata, outwidth, outheight)
+
+def genmips(fn, width, height, d8to24, d15to8, swap):
+    if width < (1<<MIPLEVELS) or height < (1<<MIPLEVELS):
+        return
+
+    mips = [(bytearray(), 0, 0)] * MIPLEVELS
+
+    with open(fn, "rb") as fin:
+        print(fn)
+        data = mmap.mmap(fin.fileno(), width*height, access=mmap.ACCESS_COPY)
+
+        data = swap(data, width, height)
+        mips[0] = (data, width, height)
+
+        mipdata = data
+        mipwidth = width
+        mipheight = height
+
+        for i in range(MIPLEVELS-1):
+            mipdata, mipwidth, mipheight = genmip(mipdata, mipwidth, mipheight, d8to24, d15to8)
+            mips[i+1] = (mipdata, mipwidth, mipheight)
+
+    with open(fn, "wb") as fout:
+        for i in range(MIPLEVELS):
+            fout.write(swap(mips[i][0], mips[i][2], mips[i][1]))
+
+# lump to json
+with open(tex1name, "rb") as fin:
+    print("loading %s" % tex1name)
+    data = mmap.mmap(fin.fileno(), 0, access=mmap.ACCESS_COPY)
+    data = decompress_data(data)
+    tex1 = Texture1.create_from_lump(data)
+
+    print("loading %s" % palname)
+    with open(palname, "rb") as fin:
+        pal = mmap.mmap(fin.fileno(), 0, access=mmap.ACCESS_COPY)
+        d8to24 = [(0,0,0)] * 256
+
+        print("loading palette")
+        for i in range(256):
+            r = pal[i*3+0]
+            g = pal[i*3+1]
+            b = pal[i*3+2]
+            d8to24[i] = (r,g,b)
+
+        d15to8 = {}
+
+        for e in tex1.entries:
+            fn = e.name.decode().rstrip('\0')
+            if fn.lower().startswith("sky"):
+                continue
+            fn = os.path.join(dirname, fn)
+            genmips(fn, e.width, e.height, d8to24, d15to8, swaprowcol)
+
+        flats = False
+        for e in content:
+            if e["name"] == "F_END":
+                break
+            if e["name"] == "F_START":
+                flats = True
+                continue
+            if flats:
+                fn = e["name"]
+                fn = os.path.join(dirname, fn)
+                genmips(fn, 64, 64, d8to24, d15to8, noswaprowcol)
