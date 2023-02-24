@@ -448,6 +448,13 @@ class WADFile():
 					first_unmapped = i + 1
 					continue
 
+				if lumps[t_start] and lumps[t_end] is None and (i < t_start or i > t_end):
+					continue
+				if lumps[s_start] and lumps[s_end] is None and (i < s_start or i > s_end):
+					continue
+				if lumps[f_start] and lumps[f_end] is None and (i < f_start or i > f_end):
+					continue
+
 				size = resource.padded_size()
 				page = math.floor((base_offset + data_offset) / 0x80000)
 				if ssf:
