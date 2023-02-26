@@ -131,10 +131,15 @@ def noswaprowcol(indata, width, height):
 
 def genmip(indata, width, height, d8to24, d15to8):
     outwidth = width >> 1
+    if outwidth < 1:
+        outwidth = 1
+
     outheight = height >> 1
-    outdata = bytearray()
+    if outheight < 1:
+        outheight = 1
 
     inp = 0
+    outdata = bytearray()
 
     for i in range(outheight):
         if i * 2 + 1 < height:
@@ -176,8 +181,8 @@ def genmip(indata, width, height, d8to24, d15to8):
     return (outdata, outwidth, outheight)
 
 def genmips(fn, width, height, d8to24, d15to8, swap):
-    if width < (1<<MIPLEVELS) or height < (1<<MIPLEVELS):
-        return
+    #if width < (1<<MIPLEVELS) or height < (1<<MIPLEVELS):
+    #    return
 
     mips = [(bytearray(), 0, 0)] * MIPLEVELS
 
