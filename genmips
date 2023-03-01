@@ -89,9 +89,14 @@ dirname = sys.argv[1]
 with open(os.path.join(dirname, "content.json")) as f:
 	content = json.load(f)
 
+def findcontent(content, name):
+    for e in content:
+        if e["name"] == name:
+            return e
+    return None
+
 dirname = os.path.join(dirname, "files")
-tex1name = os.path.join(dirname, "TEXTURE1")
-palname = os.path.join(dirname, "PLAYPALS")
+palname = os.path.join(dirname, findcontent(content, "PLAYPALS")["filename"])
 
 def sqcolordist(rgb1, rgb2):
     ravg = (rgb1[0] + rgb2[0]) / 2
@@ -206,10 +211,14 @@ def genmips(fn, width, height, d8to24, d15to8, swap):
             fout.write(swap(mips[i][0], mips[i][2], mips[i][1]))
 
 # lump to json
+tex1 = findcontent(content, "TEXTURE1")
+tex1name = os.path.join(dirname, tex1["filename"])
+
 with open(tex1name, "rb") as fin:
     print("loading %s" % tex1name)
     data = mmap.mmap(fin.fileno(), 0, access=mmap.ACCESS_COPY)
-    data = decompress_data(data)
+    if "compressed" in tex1 and tex1["compressed"]:
+        data = decompress_data(data)
     tex1 = Texture1.create_from_lump(data)
 
     print("loading %s" % palname)
@@ -241,6 +250,6 @@ with open(tex1name, "rb") as fin:
                 flats = True
                 continue
             if flats:
-                fn = e["name"]
+                fn = e["filename"]
                 fn = os.path.join(dirname, fn)
                 genmips(fn, 64, 64, d8to24, d15to8, noswaprowcol)
