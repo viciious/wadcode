@@ -1,0 +1,189 @@
+#!/usr/bin/python3
+
+import sys
+import os
+import mmap
+import bisect
+
+def readu16(f):
+    return int.from_bytes(f.read(2), "big", signed=False)
+
+def readu32(f):
+    return int.from_bytes(f.read(4), "big", signed=False)
+
+def readu8(f):
+    return int.from_bytes(f.read(1), "big", signed=False)
+
+def writeu8(f, v):
+    f.write(v.to_bytes(1, "big", signed=False))
+
+def writebu16(f, v):
+    f.write(v.to_bytes(2, "big", signed=False))
+
+def writebu32(f, v):
+    f.write(v.to_bytes(4, "big", signed=False))
+
+def readpatch(fin):
+    with open(fin, "rb") as f:
+        width = readu16(f)
+        height = readu16(f)
+        offs = readu32(f)
+        columnofs = []
+        columns = []
+
+        for i in range(width):
+            columnofs.append(readu16(f))
+        
+        for i in range(width):
+            f.seek(columnofs[i])
+            while True:
+                topdelta = readu8(f)
+                length = readu8(f)
+                if topdelta == 255 or length == 0:
+                    columns.append((255, 255, 0))
+                    break
+                columns.append((topdelta, length, readu16(f)))
+        return (width, height, offs, columnofs, columns)
+    return (0, 0, 0, None, None)
+
+def writepatch(fin, width, height, offs, columnofs, columns):
+    with open(fin, "wb") as f:
+        writebu16(f, width)
+        writebu16(f, height)
+        writebu32(f, offs)
+
+        for i in range(width):
+            writebu16(f, columnofs[i])
+
+        j = 0
+        for i in range(width):
+            sentinel = False
+
+            while j < len(columns):
+                col, j = columns[j], j + 1
+
+                if col[0] == 255:
+                    writeu8(f, 255)
+                    writeu8(f, 255)
+                    sentinel = True
+                    break
+                writeu8(f, col[0])
+                writeu8(f, col[1])
+                writebu16(f, col[2])
+
+            if not sentinel:
+                writeu8(f, 255)
+                writeu8(f, 255)
+                sentinel = True
+
+def writepixels(fin, pixels):
+    with open(fin, "wb") as f:
+        f.write(pixels)
+
+def optpatch(fin, fin2):
+    origsize = os.path.getsize(fin)
+    width, height, offs, columnofs, columns = readpatch(fin)
+
+    uniqcols = {}
+    with open(fin2, "rb") as f2:
+        pixels = mmap.mmap(f2.fileno(), 0, access=mmap.ACCESS_COPY)
+        newofs = 8 + width * 2
+        
+        j = 0
+        for i in range(width):
+            coloff, columnofs[i] = columnofs[i], newofs
+
+            while j < len(columns):
+                topdelta, length, dataofs = columns[j]
+
+                if topdelta == 255:
+                    newofs, j = newofs + 2, j + 1
+                    break
+
+                data = tuple(pixels[dataofs:dataofs+length])
+
+                x = uniqcols.get(data)
+                if x:
+                    if x[2] != dataofs:
+                        #if length >= 1:
+                        #    saved = saved + length
+                        #print("duplicate %s %s %d -> %d" % (topdelta, length, dataofs, x[2]))
+                        columns[j] = (columns[j][0], columns[j][1], x[2])
+                else:
+                    uniqcols[data] = (topdelta, length, dataofs)
+
+                newofs, j = newofs + 4, j + 1
+
+        pixels.close()
+
+    writepatch(fin, width, height, offs, columnofs, columns)
+
+    saved = origsize - os.path.getsize(fin)
+    if saved > 0:
+        print("%s\t%s" % (fin, saved))
+
+def optpixels(fin, fin2):
+    size = os.path.getsize(fin2)
+    width, height, offs, columnofs, columns = readpatch(fin)
+    offsets = {}
+
+    with open(fin2, "rb") as f2:
+        pixels = mmap.mmap(f2.fileno(), 0, access=mmap.ACCESS_COPY)
+
+        j = 0
+        while j < len(columns):
+            topdelta, length, dataofs = columns[j]
+            if topdelta != 255:
+                if dataofs in offsets:
+                    l = offsets[dataofs]
+                    if length > l:
+                        offsets[dataofs] = length
+                else:
+                    offsets[dataofs] = length
+            j = j + 1
+        offsets = [(k,v) for k,v in offsets.items()]
+        used = sorted(offsets, key=lambda x: x[0])
+
+        newpixels = bytearray()
+
+        #print(columns)
+        #print(used)
+
+        offset = 0
+        k = 0
+        origused = used.copy()
+        while k < len(used):
+            o, l = used[k]
+            oo, ol = origused[k]
+            if offset < o:
+                j = 0
+                while j < len(columns):
+                    topdelta, length, dataofs = columns[j]
+                    if topdelta != 255 and dataofs >= o:
+                        #print("%s -> %s" % (dataofs, dataofs - (o - offset)))
+                        columns[j] = (topdelta, length, dataofs - (o - offset))
+                    j = j + 1
+                j = k
+                while j < len(used):
+                    used[j] = (used[j][0] - (o - offset), used[j][1])
+                    j = j + 1
+
+            newpixels = newpixels + pixels[oo:oo+ol]
+            offset = offset + l
+            k = k + 1
+
+        saved = 0
+
+        #print(columns)
+        #print(len(newpixels))
+        pixels.close()
+
+    writepatch(fin, width, height, offs, columnofs, columns)
+    writepixels(fin2, newpixels)
+
+    saved = size - os.path.getsize(fin2)
+    if saved > 0:
+        print("%s\t%s" % (fin2, saved))
+
+optpatch(sys.argv[1], sys.argv[2])
+optpixels(sys.argv[1], sys.argv[2])
