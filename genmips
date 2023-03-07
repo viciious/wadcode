@@ -190,12 +190,13 @@ def genmips(fn, width, height, d8to24, d15to8, swap):
     #    return
 
     mips = [(bytearray(), 0, 0)] * MIPLEVELS
+    mm = None
 
     with open(fn, "rb") as fin:
         print(fn)
-        data = mmap.mmap(fin.fileno(), width*height, access=mmap.ACCESS_COPY)
+        mm = mmap.mmap(fin.fileno(), width*height, access=mmap.ACCESS_COPY)
 
-        data = swap(data, width, height)
+        data = swap(mm, width, height)
         mips[0] = (data, width, height)
 
         mipdata = data
@@ -209,6 +210,8 @@ def genmips(fn, width, height, d8to24, d15to8, swap):
     with open(fn, "wb") as fout:
         for i in range(MIPLEVELS):
             fout.write(swap(mips[i][0], mips[i][2], mips[i][1]))
+    if mm:
+        mm.close()
 
 # lump to json
 tex1 = findcontent(content, "TEXTURE1")
@@ -218,7 +221,9 @@ with open(tex1name, "rb") as fin:
     print("loading %s" % tex1name)
     data = mmap.mmap(fin.fileno(), 0, access=mmap.ACCESS_COPY)
     if "compressed" in tex1 and tex1["compressed"]:
-        data = decompress_data(data)
+        mm = data
+        data = decompress_data(mm)
+        mm.close()
     tex1 = Texture1.create_from_lump(data)
 
     print("loading %s" % palname)
@@ -253,3 +258,4 @@ with open(tex1name, "rb") as fin:
                 fn = e["filename"]
                 fn = os.path.join(dirname, fn)
                 genmips(fn, 64, 64, d8to24, d15to8, noswaprowcol)
+        pal.close()
