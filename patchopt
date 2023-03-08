@@ -1,9 +1,24 @@
 #!/usr/bin/python3
 
+#	Copyright (C) 2023 Victor Luchits
+#
+#	This file is free software; you can redistribute it and/or modify
+#	it under the terms of the GNU General Public License as published by
+#	the Free Software Foundation; this program is ONLY licensed under
+#	version 3 of the License, later versions are explicitly excluded.
+#
+#	This file is distributed in the hope that it will be useful,
+#	but WITHOUT ANY WARRANTY; without even the implied warranty of
+#	MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#	GNU General Public License for more details.
+#
+#	You should have received a copy of the GNU General Public License
+#	along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 import sys
 import os
 import mmap
-import bisect
+import json
 
 def readu16(f):
     return int.from_bytes(f.read(2), "big", signed=False)
@@ -185,5 +200,29 @@ def optpixels(fin, fin2):
     if saved > 0:
         print("%s\t%s" % (fin2, saved))
 
-optpatch(sys.argv[1], sys.argv[2])
-optpixels(sys.argv[1], sys.argv[2])
+def findcontent(content, name):
+    ind = 0
+    for e in content:
+        if "name" in e:
+            if e["name"] == name:
+                return (e, ind)
+        ind = ind + 1
+    return (None, -1)
+
+dirname = sys.argv[1]
+with open(os.path.join(dirname, "content.json")) as f:
+	content = json.load(f)
+
+dirname = os.path.join(dirname, "files")
+_, s_start = findcontent(content, "S_START")
+_, s_end = findcontent(content, "S_END")
+
+i = s_start + 1
+while i < s_end:
+    patch = os.path.join(dirname, content[i]["filename"])
+    pixels = os.path.join(dirname, content[i+1]["filename"])
+
+    optpatch(patch, pixels)
+    optpixels(patch, pixels)
+
+    i = i + 2
