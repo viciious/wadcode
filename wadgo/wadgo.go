@@ -70,9 +70,9 @@ func decompileWad(inWad, outDir string, bo binary.ByteOrder) error {
 	fmt.Printf("Decompiling %s\n", inWad)
 
 	if bo == binary.BigEndian {
-		cmd = exec.Command("./wadcode", "decompile", "--big-endian", inWad, outDir)
+		cmd = exec.Command("/opt/wadcode/wadcode", "decompile", "--big-endian", inWad, outDir)
 	} else {
-		cmd = exec.Command("./wadcode", "decompile", inWad, outDir)
+		cmd = exec.Command("/opt/wadcode/wadcode", "decompile", inWad, outDir)
 	}
 
 	cmd.Dir = wadCodeDir
@@ -94,7 +94,7 @@ func compileWad(inDir, outWad string, ssf bool, wadOffset int) error {
 	}
 	wadCodeArgs = append(wadCodeArgs, inDir, outWad)
 
-	cmd := exec.Command("./wadcode", wadCodeArgs...)
+	cmd := exec.Command("/opt/wadcode/wadcode", wadCodeArgs...)
 	cmd.Dir = wadCodeDir
 	stdoutStderr, err := cmd.CombinedOutput()
 	fmt.Println(strings.Join(cmd.Args, " "))
