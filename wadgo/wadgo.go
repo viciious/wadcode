@@ -265,7 +265,7 @@ func generateMips(inDir string) error {
 
 	wadCodeArgs := []string{inDir}
 
-	cmd := exec.Command("./genmips", wadCodeArgs...)
+	cmd := exec.Command("/opt/wadcode/genmips", wadCodeArgs...)
 	cmd.Dir = wadCodeDir
 	stdoutStderr, err := cmd.CombinedOutput()
 	fmt.Println(strings.Join(cmd.Args, " "))
@@ -300,9 +300,9 @@ func mergeWads(workDir, iwad, pwad, outFn string, ssf bool, wadOffset int) error
 		return err
 	}
 
-	//if err = generateMips(iwadDir); err != nil {
-	//	return err
-	//}
+	if err = generateMips(iwadDir); err != nil {
+		return err
+	}
 
 	if err = compileWad(iwadDir, outFn, ssf, wadOffset); err != nil {
 		return err
