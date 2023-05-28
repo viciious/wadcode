@@ -150,7 +150,9 @@ def swaprowcol(indata, width, height):
     return outdata
 
 def noswaprowcol(indata, width, height):
-    return indata
+    outdata = bytearray()
+    outdata[:] = indata[:]
+    return outdata
 
 def genmip(indata, width, height, d8to24, d15to8):
     outwidth = width >> 1
@@ -212,7 +214,7 @@ def genmips(fn, width, height, d8to24, d15to8, swap):
 
     with open(fn, "rb") as fin:
         print(fn)
-        mm = mmap.mmap(fin.fileno(), width*height, access=mmap.ACCESS_COPY)
+        mm = mmap.mmap(fin.fileno(), width*height, access=mmap.ACCESS_READ)
 
         data = swap(mm, width, height)
         mips[0] = (data, width, height)
@@ -224,12 +226,12 @@ def genmips(fn, width, height, d8to24, d15to8, swap):
         for i in range(MIPLEVELS-1):
             mipdata, mipwidth, mipheight = genmip(mipdata, mipwidth, mipheight, d8to24, d15to8)
             mips[i+1] = (mipdata, mipwidth, mipheight)
+    if mm:
+        mm.close()
 
     with open(fn, "wb") as fout:
         for i in range(MIPLEVELS):
             fout.write(swap(mips[i][0], mips[i][2], mips[i][1]))
-    if mm:
-        mm.close()
 
 # lump to json
 tex1 = findcontent(content, "TEXTURE1")
@@ -237,7 +239,7 @@ tex1name = os.path.join(dirname, tex1["filename"])
 
 with open(tex1name, "rb") as fin:
     print("loading %s" % tex1name)
-    data = mmap.mmap(fin.fileno(), 0, access=mmap.ACCESS_COPY)
+    data = mmap.mmap(fin.fileno(), 0, access=mmap.ACCESS_READ)
     if "compressed" in tex1 and tex1["compressed"]:
         mm = data
         data = decompress_data(mm)
@@ -246,7 +248,7 @@ with open(tex1name, "rb") as fin:
 
     print("loading %s" % palname)
     with open(palname, "rb") as fin:
-        pal = mmap.mmap(fin.fileno(), 0, access=mmap.ACCESS_COPY)
+        pal = mmap.mmap(fin.fileno(), 0, access=mmap.ACCESS_READ)
         d8to24 = [(0,0,0)] * 256
 
         print("loading palette")

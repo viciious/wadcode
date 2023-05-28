@@ -247,7 +247,6 @@ int wad32x_main(int argc, char *argv[]){
 		out_file = fopen(argv[3], "wb");
 		if(!out_file){
 			printf("ERROR: Unable to create output file.\n");
-			fclose(in_file);
 			Shutdown();		
 		}
 		
@@ -264,14 +263,12 @@ int wad32x_main(int argc, char *argv[]){
 		out_file = fopen(argv[3], "wb");	// USE THIS FOR OUTPUT_WAD
 		if(!out_file){
 			printf("ERROR: Unable to create output file.\n");
-			fclose(in_file);
 			Shutdown();
 		}
 #else
 		out_file = fopen(argv[3], "r+b");	// USE THIS FOR OUTPUT_BIN
 		if(!out_file){
 			printf("ERROR: Unable to open output file.\n");
-			fclose(in_file);
 			Shutdown();
 		}
 #endif
@@ -416,6 +413,7 @@ void MarsIn(){
 		}
 	}
 	fclose(in_file);
+	in_file = NULL;
 	
 	
 	
@@ -728,7 +726,12 @@ void MarsIn(){
 		}
 	}
 	
+#ifndef IMPORT_MODE_WAD
 	out_lump_count -= 7;
+#else
+	out_lump_count -= 6;
+#endif
+
 #ifndef FORCE_LITTLE_ENDIAN
 	i = swap_endian(ftell(out_file) - iwad_ptr);
 	out_lump_count = swap_endian(out_lump_count);
@@ -889,6 +892,7 @@ void MarsOut(){
 		}
 	}
 	fclose(in_file);
+	in_file = NULL;
 	
 	
 	
