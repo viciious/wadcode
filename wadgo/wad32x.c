@@ -1256,6 +1256,10 @@ void CreateTEXTURE1(int lump){
 	// convention purposes.
 	unsigned long long *texture1_names;
 	unsigned short *texture1_order;
+	int texture1_lump_uncompressed_size;
+	int compressed_size;
+	char lump_name[9];
+	unsigned char *texture1_uncompressed, *lump_ptr;
 	
 	if(num_of_textures > 0){
 		texture1_names = (long long *)malloc(num_of_textures<<3);
@@ -1289,8 +1293,13 @@ void CreateTEXTURE1(int lump){
 			}
 		}
 	}
+
+	texture1_lump_uncompressed_size = (num_of_textures<<2) + 4 + (num_of_textures << 5);
+	texture1_uncompressed = malloc(texture1_lump_uncompressed_size);
+	lump_ptr = texture1_uncompressed;
 	
-	fwrite(out_texture1_table, 1, (num_of_textures<<2) + 4, out_file);
+	memcpy(lump_ptr, out_texture1_table, (num_of_textures<<2) + 4);
+	lump_ptr += (num_of_textures<<2) + 4;
 	
 	for(i=0; i < num_of_textures; i++){
 		n=0;
@@ -1298,13 +1307,19 @@ void CreateTEXTURE1(int lump){
 			n++;
 		
 		*(short *)&out_texture1_data[(n << 5) + 26] = i;
-		fwrite(&out_texture1_data[n << 5], 1, 32, out_file);
+		memcpy(lump_ptr, &out_texture1_data[n << 5], 32);
+		lump_ptr += 32;
 	}
+
+	compressed_size = CompressLump(out_file, texture1_uncompressed, texture1_lump_uncompressed_size);
 	
-	WriteTableCustom(out_file_size, (num_of_textures<<2) + (num_of_textures<<5) + 4, "TEXTURE1");
+	strcpy(lump_name, "TEXTURE1");
+	lump_name[0] |= 0x80;
+	WriteTableCustom(out_file_size, texture1_lump_uncompressed_size, lump_name);
 	
-	out_file_size += (num_of_textures<<2) + (num_of_textures<<5) + 4;
+	out_file_size += compressed_size;
 	
+	free(texture1_uncompressed);
 	if(num_of_textures > 0){
 		free(texture1_names);
 		free(texture1_order);
@@ -1495,7 +1510,213 @@ void ConvertCOLORMAPData(int lump){
 	out_file_size += 16896;
 }
 
+int CompressLump(FILE *output, unsigned char *uncompressed, int output_size)
+{
+	int compressed_size = 0;
 
+	unsigned char *key = 0;
+	int key_size = 0;
+	
+	unsigned char *bitfield = 0;
+	int bitfield_size = 0;
+	
+	int n;	// 
+	int i;	// 
+	int b;	// 
+	int c;	// number of bytes to compare
+	
+	int data_comp_1;
+	int data_comp_2;
+
+	char bytes_to_copy = 0;
+
+	for(i=1; i <= output_size - 3; i++){
+		// check for repeated data (no less than 3 bytes in length)
+		
+		data_comp_1 = (uncompressed[i]<<16)
+			| (uncompressed[i+1]<<8)
+			| uncompressed[i+2];
+			
+		for(n=0; n < i; n++){
+			if(i-n > 0x1000)
+				n = i - 0x1000;
+				
+			data_comp_2 = (uncompressed[n]<<16)
+				| (uncompressed[n + (1%(i-n))]<<8)
+				| uncompressed[n + (2%(i-n))];
+			
+			if(data_comp_1 == data_comp_2){
+				// check to see how many bytes match beyond 3
+				
+				if(bytes_to_copy == 0){
+					bytes_to_copy = 3;
+					b = n;
+				}
+				for(c=3; c <= 16; c++){
+					if(i+c <= output_size){
+						if(uncompressed[i+c] != uncompressed[n + (c%(i-n))]){
+							// stop checking for matches
+							if(c >= bytes_to_copy){
+								bytes_to_copy = c;
+								c = 0x40;
+								b = n;		// save 'n' for referencing later
+							}
+							else
+								c = 0x40;
+						}
+					}
+					else{
+						if(c >= bytes_to_copy){
+							bytes_to_copy = c-1;
+							c = 0x40;
+							b = n;		// save 'n' for referencing later
+						}
+						else
+							c = 0x40;
+					}	
+				}
+				
+				if(c == 17){
+					bytes_to_copy = 16;
+					b = n;
+				}
+			}
+		}
+		
+		if(bytes_to_copy){
+			// add info to the key
+			
+			key_size += 4;
+			key = (char *)realloc(key, key_size);
+			
+			*(unsigned short *)&key[key_size - 4] = i;
+			*(unsigned short *)&key[key_size - 2] = (((i-b)-1)<<4) | (bytes_to_copy-1);
+			
+			i += (bytes_to_copy-1);
+			
+			bytes_to_copy = 0;
+		}
+	}
+	
+	key_size += 4;
+	key = (char *)realloc(key, key_size);
+	
+	*(unsigned short *)&key[key_size - 4] = 0xFFFF;
+	*(unsigned short *)&key[key_size - 2] = 0;
+	
+	// create key bitfield
+	n = 0;
+	for(i=0; i < output_size; i++){
+		if(i < *(unsigned short *)&key[n]){
+			bitfield_size++;
+			bitfield = (char *)realloc(bitfield, bitfield_size);
+			
+			bitfield[bitfield_size-1] = 0;
+		}
+		else{
+			bitfield_size++;
+			bitfield = (char *)realloc(bitfield, bitfield_size);
+			
+			bitfield[bitfield_size-1] = 1;
+			
+			i += (*(unsigned short *)&key[n+2] & 0xF);
+			n += 4;
+		}
+	}
+	
+	// add terminator to key
+	bitfield_size++;
+	bitfield = (char *)realloc(bitfield, bitfield_size);
+	bitfield[bitfield_size-1] = 0xF;
+	
+	// if needed, align the bitfield to the next whole byte (8 bits)
+	while(bitfield_size & 7){
+		bitfield_size++;
+		bitfield = (char *)realloc(bitfield, bitfield_size);
+		
+		bitfield[bitfield_size-1] = 0;
+	}
+	
+	// write data
+	n = 0;	// used as subscript to key[]
+	b = 0;	// used as subscript to bitfield[]
+	for(i=0; i < output_size; i++){	
+		if(i < output_size){
+			if((b & 7) == 0){
+				data_comp_1 = 0;
+				
+				if(bitfield[b] == 0xF)	data_comp_1 |= 1;
+				else					data_comp_1 |= bitfield[b];
+				
+				if(bitfield[b+1] == 0xF)	data_comp_1 |= 2;
+				else					data_comp_1 |= (bitfield[b+1]<<1);
+				
+				if(bitfield[b+2] == 0xF)	data_comp_1 |= 4;
+				else					data_comp_1 |= (bitfield[b+2]<<2);
+				
+				if(bitfield[b+3] == 0xF)	data_comp_1 |= 8;
+				else					data_comp_1 |= (bitfield[b+3]<<3);
+				
+				if(bitfield[b+4] == 0xF)	data_comp_1 |= 16;
+				else					data_comp_1 |= (bitfield[b+4]<<4);
+				
+				if(bitfield[b+5] == 0xF)	data_comp_1 |= 32;
+				else					data_comp_1 |= (bitfield[b+5]<<5);
+				
+				if(bitfield[b+6] == 0xF)	data_comp_1 |= 64;
+				else					data_comp_1 |= (bitfield[b+6]<<6);
+				
+				if(bitfield[b+7] == 0xF)	data_comp_1 |= 128;
+				else					data_comp_1 |= (bitfield[b+7]<<7);
+				
+				fputc(data_comp_1, out_file);
+				compressed_size++;
+			}
+			
+			if(data_comp_1 & 1){
+				fputc(key[n+3], out_file);
+				fputc(key[n+2], out_file);
+				compressed_size += 2;
+				
+				i += (*(unsigned short *)&key[n+2] & 0xF);
+				n += 4;
+			}
+			else{
+				fputc(uncompressed[i], out_file);
+				compressed_size++;
+			}
+			
+			data_comp_1 >>= 1;
+			b++;
+		}	
+	}
+	
+	if((b&7) == 0){
+		if(bitfield[b] == 0xF){	
+			// let 'i' go one over to allow special cases
+			// where terminator needs to be inserted
+			// (e.g. MAP14 "SEGS")
+			b = 1;
+			fputc(b, out_file);
+			compressed_size++;
+		}
+	}
+	
+	// add terminator
+	compressed_size += 2;
+	i = 0;
+	fwrite(&i, 2, 1, out_file);
+	
+	while(compressed_size & 3){
+		fputc(i, out_file);
+		compressed_size++;
+	}
+
+	free(key);
+	free(bitfield);
+
+	return compressed_size;
+}
 
 void ConvertMapData32X(int lump, char mapfile){
 	int data_ptr = *(int *)&table[(lump*16)] - 0xC;
@@ -1590,189 +1811,7 @@ void ConvertMapData32X(int lump, char mapfile){
 	if(table[(lump*16)+8] >> 7){
 		// data needs to be compressed
 		
-		for(i=1; i <= output_size - 3; i++){
-			// check for repeated data (no less than 3 bytes in length)
-			
-			data_comp_1 = (uncompressed[i]<<16)
-			 | (uncompressed[i+1]<<8)
-			 | uncompressed[i+2];
-			 
-			for(n=0; n < i; n++){
-				if(i-n > 0x1000)
-					n = i - 0x1000;
-					
-				data_comp_2 = (uncompressed[n]<<16)
-				 | (uncompressed[n + (1%(i-n))]<<8)
-				 | uncompressed[n + (2%(i-n))];
-				
-				if(data_comp_1 == data_comp_2){
-					// check to see how many bytes match beyond 3
-					
-					if(bytes_to_copy == 0){
-						bytes_to_copy = 3;
-						b = n;
-					}
-					for(c=3; c <= 16; c++){
-						if(i+c <= output_size){
-							if(uncompressed[i+c] != uncompressed[n + (c%(i-n))]){
-								// stop checking for matches
-								if(c >= bytes_to_copy){
-									bytes_to_copy = c;
-									c = 0x40;
-									b = n;		// save 'n' for referencing later
-								}
-								else
-									c = 0x40;
-							}
-						}
-						else{
-							if(c >= bytes_to_copy){
-								bytes_to_copy = c-1;
-								c = 0x40;
-								b = n;		// save 'n' for referencing later
-							}
-							else
-								c = 0x40;
-						}	
-					}
-					
-					if(c == 17){
-						bytes_to_copy = 16;
-						b = n;
-					}
-				}
-			}
-			
-			if(bytes_to_copy){
-				// add info to the key
-				
-				key_size += 4;
-				key = (char *)realloc(key, key_size);
-				
-				*(unsigned short *)&key[key_size - 4] = i;
-				*(unsigned short *)&key[key_size - 2] = (((i-b)-1)<<4) | (bytes_to_copy-1);
-				
-				i += (bytes_to_copy-1);
-				
-				bytes_to_copy = 0;
-			}
-		}
-		
-		key_size += 4;
-		key = (char *)realloc(key, key_size);
-		
-		*(unsigned short *)&key[key_size - 4] = 0xFFFF;
-		*(unsigned short *)&key[key_size - 2] = 0;
-		
-		// create key bitfield
-		n = 0;
-		for(i=0; i < output_size; i++){
-			if(i < *(unsigned short *)&key[n]){
-				bitfield_size++;
-				bitfield = (char *)realloc(bitfield, bitfield_size);
-				
-				bitfield[bitfield_size-1] = 0;
-			}
-			else{
-				bitfield_size++;
-				bitfield = (char *)realloc(bitfield, bitfield_size);
-				
-				bitfield[bitfield_size-1] = 1;
-				
-				i += (*(unsigned short *)&key[n+2] & 0xF);
-				n += 4;
-			}
-		}
-		
-		// add terminator to key
-		bitfield_size++;
-		bitfield = (char *)realloc(bitfield, bitfield_size);
-		bitfield[bitfield_size-1] = 0xF;
-		
-		// if needed, align the bitfield to the next whole byte (8 bits)
-		while(bitfield_size & 7){
-			bitfield_size++;
-			bitfield = (char *)realloc(bitfield, bitfield_size);
-			
-			bitfield[bitfield_size-1] = 0;
-		}
-		
-		// write data
-		n = 0;	// used as subscript to key[]
-		b = 0;	// used as subscript to bitfield[]
-		for(i=0; i < output_size; i++){	
-			if(i < output_size){
-				if((b & 7) == 0){
-					data_comp_1 = 0;
-					
-					if(bitfield[b] == 0xF)	data_comp_1 |= 1;
-					else					data_comp_1 |= bitfield[b];
-					
-					if(bitfield[b+1] == 0xF)	data_comp_1 |= 2;
-					else					data_comp_1 |= (bitfield[b+1]<<1);
-					
-					if(bitfield[b+2] == 0xF)	data_comp_1 |= 4;
-					else					data_comp_1 |= (bitfield[b+2]<<2);
-					
-					if(bitfield[b+3] == 0xF)	data_comp_1 |= 8;
-					else					data_comp_1 |= (bitfield[b+3]<<3);
-					
-					if(bitfield[b+4] == 0xF)	data_comp_1 |= 16;
-					else					data_comp_1 |= (bitfield[b+4]<<4);
-					
-					if(bitfield[b+5] == 0xF)	data_comp_1 |= 32;
-					else					data_comp_1 |= (bitfield[b+5]<<5);
-					
-					if(bitfield[b+6] == 0xF)	data_comp_1 |= 64;
-					else					data_comp_1 |= (bitfield[b+6]<<6);
-					
-					if(bitfield[b+7] == 0xF)	data_comp_1 |= 128;
-					else					data_comp_1 |= (bitfield[b+7]<<7);
-					
-					fputc(data_comp_1, out_file);
-					compressed_size++;
-				}
-				
-				if(data_comp_1 & 1){
-					fputc(key[n+3], out_file);
-					fputc(key[n+2], out_file);
-					compressed_size += 2;
-					
-					i += (*(unsigned short *)&key[n+2] & 0xF);
-					n += 4;
-				}
-				else{
-					fputc(uncompressed[i], out_file);
-					compressed_size++;
-				}
-				
-				data_comp_1 >>= 1;
-				b++;
-			}	
-		}
-		
-		if((b&7) == 0){
-			if(bitfield[b] == 0xF){	
-				// let 'i' go one over to allow special cases
-				// where terminator needs to be inserted
-				// (e.g. MAP14 "SEGS")
-				b = 1;
-				fputc(b, out_file);
-				compressed_size++;
-			}
-		}
-		
-		// add terminator
-		compressed_size += 2;
-		i = 0;
-		fwrite(&i, 2, 1, out_file);
-		
-		while(compressed_size & 3){
-			fputc(i, out_file);
-			compressed_size++;
-		}
-		
-		
+		compressed_size = CompressLump(output, uncompressed, output_size);
 		
 		WriteTable(lump, out_file_size, output_size);
 		
