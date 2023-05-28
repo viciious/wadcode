@@ -1811,7 +1811,7 @@ void ConvertMapData32X(int lump, char mapfile){
 	if(table[(lump*16)+8] >> 7){
 		// data needs to be compressed
 		
-		compressed_size = CompressLump(output, uncompressed, output_size);
+		compressed_size = CompressLump(out_file, uncompressed, output_size);
 		
 		WriteTable(lump, out_file_size, output_size);
 		
