@@ -106,8 +106,17 @@ with open(os.path.join(dirname, "content.json")) as f:
 	content = json.load(f)
 
 def findcontent(content, name):
+    in_sounds = False
     for e in content:
         if "name" not in e:
+            continue
+        if e["name"] == "DS_START":
+            in_sounds = True
+            continue
+        if e["name"] == "DS_END":
+            in_sounds = False
+            continue
+        if in_sounds:
             continue
         if e["name"] == name:
             return e
@@ -264,7 +273,8 @@ with open(tex1name, "rb") as fin:
             fn = e.name.decode().rstrip('\0')
             if fn.lower().startswith("sky"):
                 continue
-            fn = os.path.join(dirname, fn)
+            fe = findcontent(content, fn.upper())
+            fn = os.path.join(dirname, fe["filename"])
             genmips(fn, e.width, e.height, d8to24, d15to8, swaprowcol)
 
         flats = False
