@@ -96,7 +96,7 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 				s.ChannelMessageSendReply(channel.ID, "Error creating file for attachment", ref)
 				return
 			}
-			if bytes.Equal(header, []byte{80, 87, 65, 68}) { // PWAD
+			if bytes.Equal(header, []byte{50, 57, 41, 44}) { // PWAD
 				pwadIndex = i
 			}
 			files[i] = fn

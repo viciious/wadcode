@@ -462,7 +462,7 @@ void MarsIn(){
 	
 	
 	
-	for(lump=0; lump < lump_count-3; lump++){
+	for(lump=0; lump < lump_count; lump++){
 		printf("0x%04X\t%c%c%c%c%c%c%c%c\n", lump + lump_value_fix,
 		 (table[(lump*16)+8] & 0x7F), table[(lump*16)+9], table[(lump*16)+10], table[(lump*16)+11],
 		 table[(lump*16)+12], table[(lump*16)+13], table[(lump*16)+14], table[(lump*16)+15]);
@@ -726,10 +726,11 @@ void MarsIn(){
 		}
 	}
 	
+	// WTF???
 #ifndef IMPORT_MODE_WAD
-	out_lump_count -= 7;
+	out_lump_count -= 4;
 #else
-	out_lump_count -= 6;
+	out_lump_count -= 3;
 #endif
 
 #ifndef FORCE_LITTLE_ENDIAN
@@ -911,7 +912,7 @@ void MarsOut(){
 	
 	
 	
-	for(lump=0; lump < lump_count-3; lump++){
+	for(lump=0; lump < lump_count; lump++){
 		printf("0x%04X\t%c%c%c%c%c%c%c%c\n", lump + lump_value_fix,
 		 (table[(lump*16)+8] & 0x7F), table[(lump*16)+9], table[(lump*16)+10], table[(lump*16)+11],
 		 table[(lump*16)+12], table[(lump*16)+13], table[(lump*16)+14], table[(lump*16)+15]);
