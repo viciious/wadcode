@@ -291,6 +291,10 @@ class WADFile():
 
 		fns = Filenames()
 		prev_resource = None
+		in_sounds = False
+		in_textures = False
+		in_flats = False
+		in_sprites = False
 		for resource in self._resources:
 			resource_item = {
 				"name":		resource.name,
@@ -298,14 +302,44 @@ class WADFile():
 
 			if len(resource.data) == 0:
 				resource_item["virtual"] = True
+				virt_name = resource.name.upper()
+				if virt_name == "DS_START":
+					in_sounds = True
+					in_textures = in_flats = in_sprites = False
+				elif virt_name == "DS_END":
+					in_sounds = False
+				elif virt_name == "T_START":
+					in_textures = True
+					in_sounds = in_flats = in_sprites = False
+				elif virt_name == "T_END":
+					in_textures = False
+				elif virt_name == "F_START":
+					in_flats = True
+					in_sounds = in_textures = in_sprites = False
+				elif virt_name == "F_END":
+					in_flats = False
+				elif virt_name == "S_START":
+					in_sprites = True
+					in_sounds = in_textures = in_flats = False
+				elif virt_name == "S_END":
+					in_sprites = False
 			else:
 				extension = ""
+
 				if resource.name == "" or resource.name == ".":
 					del resource_item["name"]
 					template = "." + prev_resource.name.lower()
 				else:
 					template = resource.name.lower()
-					
+					if in_sounds:
+						template = "s_" + template + ".wav"
+					elif in_textures:
+						template = "t_" + template
+					elif in_flats:
+						template = "f_" + template
+					elif in_sprites:
+						template = "p_" + template
+
 				filename = fns.generate(template, extension)
 				if ".." in filename:
 					continue
