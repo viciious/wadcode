@@ -27,6 +27,7 @@ import contextlib
 import sys
 import mmap
 import math
+import hashlib
 from NamedStruct import NamedStruct
 
 class Filenames():
@@ -50,6 +51,9 @@ class WADFile():
 			self.data = kwargs.pop("data", b"")
 			self.compressed = kwargs.pop("compressed", False)
 			self.group = kwargs.pop("group", None)
+			self.sha1 = kwargs.pop("sha1", "")
+			self.remap_to = kwargs.pop("remap_to", "")
+			self.filename = kwargs.pop("filename", "")
 
 		def padded_size(self):
 			size = 0
@@ -84,15 +88,16 @@ class WADFile():
 		), struct_extra)
 
 		self._resources = [ ]
-		self._resources_by_name = collections.defaultdict(list)
-		self._mus_by_map = {}
+		self._resources_by_sha1 = collections.defaultdict(list)
 
 	def add_resource(self, resource):
 		self._resources.append(resource)
-		self._resources_by_name[resource.name].append(resource)
-
-	def add_map(self, mapname, mus):
-		self._mus_by_map[mapname] = mus
+		if resource.sha1 != "":
+			self._resources_by_sha1[resource.sha1].append(resource)
+			if len(resource.data) > 0 and len(self._resources_by_sha1[resource.sha1]) > 1:
+				resource.data = b""
+				resource.remap_to = self._resources_by_sha1[resource.sha1][0]
+				print("%s is a duplicate of %s" % (resource.filename, self._resources_by_sha1[resource.sha1][0].filename))
 
 	@classmethod
 	def compressed_length(cls, data):
@@ -215,28 +220,6 @@ class WADFile():
 		return wadfile
 
 	@classmethod
-	def parse_dmapinfo(cls, wadfile, dmapinfo):
-		regex = r"([^{]+)\r?\n{\r?\n(.+?)\r?\n}"
-
-		matches = re.finditer(regex, dmapinfo, re.MULTILINE | re.DOTALL)
-		for _, match in enumerate(matches, start=1):
-			grp = match.groups()
-			cmd = grp[0].strip()
-			kvs = grp[1].strip()
-			if not cmd.startswith("map "):
-				continue
-
-			mapname = re.findall(r"map\s+\"([^\"]+)\"", cmd)
-			if not mapname:
-				continue
-
-			mus = re.findall(r"music\s*=\s*\"([^\"]+)\"", kvs)
-			if not mus:
-				continue
-
-			wadfile.add_map(mapname[0], mus[0])
-
-	@classmethod
 	def create_from_directory(cls, dirname, endian, tag = None):
 		wadfile = cls(endian)
 		content_json = dirname + "/content.json"
@@ -245,11 +228,17 @@ class WADFile():
 
 		curtag = None
 		for resource_info in content:
+			fn = ""
 			if resource_info.get("virtual") is True:
 				data = b""
 			else:
-				with open(dirname + "/files/" + resource_info["filename"], "rb") as f:
+				fn = resource_info["filename"]
+				sha1 = hashlib.sha1()
+				with open(dirname + "/files/" + fn, "rb") as f:
 					data = f.read()
+
+			sha1 = hashlib.sha1()
+			sha1.update(data)
 
 			name = ""
 			if "name" in resource_info:
@@ -275,11 +264,8 @@ class WADFile():
 						continue
 
 			compressed = "compressed" in resource_info
-			resource = cls._WADResource(name = name, data = data, compressed = compressed, group = group)
+			resource = cls._WADResource(name = name, data = data, compressed = compressed, group = group, sha1 = sha1.hexdigest(), filename = fn)
 			wadfile.add_resource(resource)
-
-			if name.lower() == "dmapinfo":
-				cls.parse_dmapinfo(wadfile, data.decode('ascii'))
 
 		return wadfile
 
@@ -400,31 +386,6 @@ class WADFile():
 			_group_cache[group] = size
 			return size
 
-		# assign groups to music tracks and maps that use them
-		# (unless already specified in content.json)
-		for mapname in self._mus_by_map:
-			mus = self._mus_by_map[mapname]
-
-			if len(self._resources_by_name[mus]) == 0:
-				print("Music %s is in DMAPINFO but not in WAD" % mus)
-				sys.exit(1)
-
-			if musgroups:
-				resmus = self._resources_by_name[mus][0]
-				if resmus.group is None:
-					resmus.group = mus
-
-			if len(self._resources_by_name[mapname]) == 0:
-				print("Map %s is in DMAPINFO but not in WAD" % mapname)
-				sys.exit(1)
-
-			resmap = self._resources_by_name[mapname][0]
-			if resmap.group is None:
-				if musgroups:
-					resmap.group = mus
-				else:
-					resmap.group = mapname
-
 		# assign groups to map lumps
 		last_group = None
 		for resource in self._resources:
@@ -455,10 +416,21 @@ class WADFile():
 		f_end = [i for i, x in enumerate(self._resources) if x.name == "F_END"][0]
 
 		lumps = [None] * len(self._resources)
+		lumps_sha1 = {}
 
 		def add_resource_lump(num, resource, data_offset):
 			#print(data_offset, resource.name)
-			lump = self.__class__.resource_lump(resource, data_offset)
+
+			if resource.remap_to != "":
+				#print("remapping %s to %s" % (resource.filename, resource.remap_to.filename))
+				lump2 = lumps_sha1[resource.sha1]
+				lump = self.__class__.resource_lump(resource, lump2.offset)
+				lump.size = lump2.size
+				lump.pad = 0
+			else:
+				lump = self.__class__.resource_lump(resource, data_offset)
+				if resource.sha1 not in lumps_sha1:
+					lumps_sha1[resource.sha1] = lump
 			lumps[num] = lump
 
 			if ssf and resource.name == "PAGE7":
@@ -564,7 +536,8 @@ class WADFile():
 
 		if not ssf:
 			return lumps
-		return sorted(lumps, key=lambda d: d.offset)
+		return lumps
+		#return sorted(lumps, key=lambda d: d.offset)
 
 	def write(self, wad_filename, wadtype, ssf, base_offset, musgroups):
 		with open(wad_filename, "wb") as f:
