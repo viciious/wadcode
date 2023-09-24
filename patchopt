@@ -20,6 +20,15 @@ import os
 import mmap
 import json
 
+from MultiCommand import MultiCommand
+from BaseCommand import BaseCommand
+
+dirname = ""
+content = ""
+
+def diskfn(fn):
+    return os.path.join(dirname, fn)
+
 def readu16(f):
     return int.from_bytes(f.read(2), "big", signed=False)
 
@@ -209,20 +218,239 @@ def findcontent(content, name):
         ind = ind + 1
     return (None, -1)
 
-dirname = sys.argv[1]
-with open(os.path.join(dirname, "content.json")) as f:
-	content = json.load(f)
+def patchuniqs(fin, fin2):
+    origsize = os.path.getsize(fin)
+    width, _, _, _, columns = readpatch(fin)
 
-dirname = os.path.join(dirname, "files")
-_, s_start = findcontent(content, "S_START")
-_, s_end = findcontent(content, "S_END")
+    uniqcols = {}
+    with open(fin2, "rb") as f2:
+        pixels = mmap.mmap(f2.fileno(), 0, access=mmap.ACCESS_COPY)
 
-i = s_start + 1
-while i < s_end:
-    patch = os.path.join(dirname, content[i]["filename"])
-    pixels = os.path.join(dirname, content[i+1]["filename"])
+        j = 0
+        for i in range(width):
+            while j < len(columns):
+                topdelta, length, dataofs = columns[j]
+                j = j + 1
 
-    optpatch(patch, pixels)
-    optpixels(patch, pixels)
+                if topdelta == 255:
+                    break
 
-    i = i + 2
+                data = tuple(pixels[dataofs:dataofs+length])
+                x = uniqcols.get(data)
+                if not x:
+                    uniqcols[data] = (topdelta, length, dataofs)
+
+        pixels.close()
+
+    return uniqcols
+
+def mergepatches(pxfn, uniqcols, fin, fin2):
+    origsize = os.path.getsize(pxfn)
+    #print("%s %s" % (pxfn, origsize))
+    width, height, offs, columnofs, columns = readpatch(fin)
+
+    with open(pxfn, "ab") as f3:
+        with open(fin2, "rb") as f2:
+            pixels = mmap.mmap(f2.fileno(), 0, access=mmap.ACCESS_COPY)
+
+            j = 0
+            for i in range(width):
+                while j < len(columns):
+                    topdelta, length, dataofs = columns[j]
+
+                    if topdelta == 255:
+                        columns[j] = (topdelta, length, origsize)
+                        j = j + 1
+                        break
+
+                    data = tuple(pixels[dataofs:dataofs+length])
+                    x = uniqcols.get(data)
+                    if not x:
+                        data = bytearray(data)
+                        f3.write(data)
+                        columns[j] = (topdelta, length, origsize)
+                        origsize += len(data)
+                    else:
+                        columns[j] = x
+
+                    j = j + 1
+
+            pixels.close()
+
+    writepatch(fin, width, height, offs, columnofs, columns)
+
+    # copy pixels
+    with open(pxfn, "rb") as f3:
+        with open(fin2, "wb") as f2:
+            pixels = f3.read()
+            f2.write(pixels)
+
+    return uniqcols
+
+def basesprname(fn):
+    # find the first digit in the name
+    j = 0
+    while j < len(fn):
+        if fn[j] >= '0' and fn[j] <= '9':
+            break
+        j = j + 1
+    basenm = fn[:j-1]
+    return basenm
+
+def comparepatches(cols, cols2):
+    pix = 0
+    for col in cols2:
+        if col in cols:
+            pix += len(col)
+    return pix
+
+def crunchpatches(uniqs = {}, minthreshold=0, maxthreshold=0, skipsize=True):
+    totalpix = 0
+
+    _, s_start = findcontent(content, "S_START")
+    _, s_end = findcontent(content, "S_END")
+
+    i = s_start + 1
+    while i < s_end:
+        fn = content[i]["filename"]
+
+        if fn in uniqs:
+            mapped, _ = uniqs[fn]
+            if mapped:
+                i = i + 2
+                continue
+
+        patch = diskfn(fn)
+        pixels = diskfn(content[i+1]["filename"])
+
+        cols = patchuniqs(patch, pixels)
+        uniqs[fn] = tuple([False, cols])
+
+        i = i + 2
+
+    i = s_start + 1
+
+    while i < s_end:
+        fn = content[i]["filename"]
+
+        mapped, cols = uniqs[fn]
+        if mapped:
+            i = i + 2
+            continue
+
+        basenm = basesprname(fn)
+
+        bestpix = minthreshold-1
+        bestmatch = -1
+        bestcols = None
+
+        f = 0
+        while f < 31:
+            j = i + 2
+            f = f + 1
+
+            while j < s_end:
+                fn2 = content[j]["filename"]
+
+                if fn2 == fn:
+                    j = j + 2
+                    continue
+                mapped, cols2 = uniqs[fn2]
+                if mapped:
+                    j = j + 2
+                    continue
+
+                basenm2 = basesprname(fn2)
+                #if basenm2 != basenm:
+                #    break
+
+                subname = basenm + chr(ord(fn[len(basenm):len(basenm)+1]) + f) + fn[len(basenm)+1:len(basenm)+2]
+                #if not fn2.startswith(subname):
+                #    j = j + 2
+                #    continue
+
+                pix = comparepatches(cols, cols2)
+                #print(fn, fn2, pix)
+                if pix > bestpix:
+                    if skipsize or pix > os.path.getsize(diskfn(fn2)):
+                        bestpix = pix
+                        bestmatch = j
+                        bestcols = cols2
+
+                j = j + 2
+
+        if bestpix >= minthreshold and (maxthreshold == 0 or bestpix < maxthreshold):
+            #print("%s" % bestmatch)
+            #print("%s\t%s\t%s" % (fn, content[bestmatch]["filename"], bestpix))
+            print("merging %s into %s, saving %s pixels" % (content[bestmatch]["filename"], content[i]["filename"], bestpix))
+
+            mergepatches(diskfn(content[i+1]["filename"]), cols, diskfn(content[bestmatch]["filename"]), diskfn(content[bestmatch+1]["filename"]))
+            totalpix += bestpix
+            #content[bestmatch+1]["filename"] = content[i+1]["filename"]
+            uniqs[content[bestmatch]["filename"]] = (True, bestcols)
+            uniqs[fn] = (True, cols)
+            #break
+
+        i = i + 2
+
+    print("total\t\t%s" % totalpix)
+    return uniqs
+
+def optimizepatches():
+    _, s_start = findcontent(content, "S_START")
+    _, s_end = findcontent(content, "S_END")
+
+    i = s_start + 1
+    while i < s_end:
+        fn = content[i]["filename"]
+        patch = diskfn(fn)
+        pixels = diskfn(content[i+1]["filename"])
+
+        print("optimizing %s" % fn)
+
+        optpatch(patch, pixels)
+        optpixels(patch, pixels)
+
+        i = i + 2
+
+class CommandPatchOpt(BaseCommand):
+    def __init__(self, cmd, args):
+        global dirname
+        global content
+
+        BaseCommand.__init__(self, cmd, args)
+
+        dirname = args.dir
+        with open(os.path.join(dirname, "content.json")) as f:
+            content = json.load(f)
+        dirname = os.path.join(dirname, "files")
+
+class CommandOptimize(CommandPatchOpt):
+    def __init__(self, cmd, args):
+        CommandPatchOpt.__init__(self, cmd, args)
+
+        print("Optimizing patches...")
+
+        optimizepatches()
+
+class CommandCrunch(CommandPatchOpt):
+    def __init__(self, cmd, args):
+        CommandPatchOpt.__init__(self, cmd, args)
+
+        print("Crunching patches...")
+
+        uniqs = {}
+        uniqs = crunchpatches(uniqs, minthreshold=100)
+        uniqs = crunchpatches(uniqs, minthreshold=25)
+
+mc = MultiCommand()
+
+def genparser(parser):
+	parser.add_argument("dir", metavar = "directory", type = str, help = "Input directory that should be compiled to a WAD.")
+mc.register("optimize", "Remove redundant data from individual sprite patches", genparser, action = CommandOptimize)
+
+def genparser(parser):
+	parser.add_argument("dir", metavar = "directory", type = str, help = "Input directory that should be compiled to a WAD.")
+mc.register("crunch", "Crunch patches, removing redundant data across multiple files", genparser, action = CommandCrunch)
+
+mc.run(sys.argv[1:])

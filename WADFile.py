@@ -422,7 +422,7 @@ class WADFile():
 			#print(data_offset, resource.name)
 
 			if resource.remap_to != "":
-				#print("remapping %s to %s" % (resource.filename, resource.remap_to.filename))
+				print("remapping %s to %s" % (resource.filename, resource.remap_to.filename))
 				lump2 = lumps_sha1[resource.sha1]
 				lump = self.__class__.resource_lump(resource, lump2.offset)
 				lump.size = lump2.size
