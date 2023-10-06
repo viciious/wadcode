@@ -271,7 +271,7 @@ def mergepatches(pxfn, uniqcols, fin, fin2):
                         columns[j] = (topdelta, length, origsize)
                         origsize += len(data)
                     else:
-                        columns[j] = x
+                        columns[j] = (topdelta, length, x[2])
 
                     j = j + 1
 
@@ -442,6 +442,7 @@ class CommandCrunch(CommandPatchOpt):
         uniqs = {}
         uniqs = crunchpatches(uniqs, minthreshold=100)
         uniqs = crunchpatches(uniqs, minthreshold=25)
+        uniqs = crunchpatches(uniqs, minthreshold=10)
 
 mc = MultiCommand()
 
