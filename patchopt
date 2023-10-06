@@ -19,6 +19,7 @@ import sys
 import os
 import mmap
 import json
+import hashlib
 
 from MultiCommand import MultiCommand
 from BaseCommand import BaseCommand
@@ -310,6 +311,9 @@ def crunchpatches(uniqs = {}, minthreshold=0, maxthreshold=0, skipsize=True):
     _, s_start = findcontent(content, "S_START")
     _, s_end = findcontent(content, "S_END")
 
+    sha1uniqs = {}
+    sha1s = [''] * len(content)
+
     i = s_start + 1
     while i < s_end:
         fn = content[i]["filename"]
@@ -322,6 +326,20 @@ def crunchpatches(uniqs = {}, minthreshold=0, maxthreshold=0, skipsize=True):
 
         patch = diskfn(fn)
         pixels = diskfn(content[i+1]["filename"])
+
+        sha1 = hashlib.sha1()
+        data = b""
+        with open(patch, "rb") as f:
+            data = f.read()
+        sha1 = hashlib.sha1()
+        sha1.update(data)
+        sha1 = sha1.hexdigest()
+
+        if sha1 not in sha1uniqs:
+            sha1uniqs[sha1] = 1
+        else:
+            sha1uniqs[sha1] = sha1uniqs[sha1] + 1
+        sha1s[i] = sha1
 
         cols = patchuniqs(patch, pixels)
         uniqs[fn] = tuple([False, cols])
@@ -337,6 +355,9 @@ def crunchpatches(uniqs = {}, minthreshold=0, maxthreshold=0, skipsize=True):
         if mapped:
             i = i + 2
             continue
+        #if sha1uniqs[sha1s[i]] > 1:
+        #    i = i + 2
+        #    continue
 
         basenm = basesprname(fn)
 
@@ -359,6 +380,10 @@ def crunchpatches(uniqs = {}, minthreshold=0, maxthreshold=0, skipsize=True):
                 if mapped:
                     j = j + 2
                     continue
+
+                #if sha1uniqs[sha1s[j]] > 1:
+                #    j = j + 2
+                #    continue
 
                 basenm2 = basesprname(fn2)
                 #if basenm2 != basenm:
