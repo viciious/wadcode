@@ -245,12 +245,12 @@ def patchuniqs(fin, fin2):
 
     return uniqcols
 
-def mergepatches(pxfn, uniqcols, fin, fin2):
-    origsize = os.path.getsize(pxfn)
-    #print("%s %s" % (pxfn, origsize))
+def mergepatches(pixfn, uniqcols, fin, fin2):
+    origsize = os.path.getsize(pixfn)
+    #print("%s %s" % (pixfn, origsize))
     width, height, offs, columnofs, columns = readpatch(fin)
 
-    with open(pxfn, "ab") as f3:
+    with open(pixfn, "ab") as f3:
         with open(fin2, "rb") as f2:
             pixels = mmap.mmap(f2.fileno(), 0, access=mmap.ACCESS_COPY)
 
@@ -267,6 +267,7 @@ def mergepatches(pxfn, uniqcols, fin, fin2):
                     data = tuple(pixels[dataofs:dataofs+length])
                     x = uniqcols.get(data)
                     if not x:
+                        uniqcols[data] = (topdelta, length, origsize)
                         data = bytearray(data)
                         f3.write(data)
                         columns[j] = (topdelta, length, origsize)
@@ -280,23 +281,7 @@ def mergepatches(pxfn, uniqcols, fin, fin2):
 
     writepatch(fin, width, height, offs, columnofs, columns)
 
-    # copy pixels
-    with open(pxfn, "rb") as f3:
-        with open(fin2, "wb") as f2:
-            pixels = f3.read()
-            f2.write(pixels)
-
     return uniqcols
-
-def basesprname(fn):
-    # find the first digit in the name
-    j = 0
-    while j < len(fn):
-        if fn[j] >= '0' and fn[j] <= '9':
-            break
-        j = j + 1
-    basenm = fn[:j-1]
-    return basenm
 
 def comparepatches(cols, cols2):
     pix = 0
@@ -305,8 +290,9 @@ def comparepatches(cols, cols2):
             pix += len(col)
     return pix
 
-def crunchpatches(uniqs = {}, minthreshold=0, maxthreshold=0, skipsize=True):
+def crunchpatches(uniqs = {}, minthreshold=0, maxthreshold=0, skipsize=False):
     totalpix = 0
+    totalcnt = 0
 
     _, s_start = findcontent(content, "S_START")
     _, s_end = findcontent(content, "S_END")
@@ -318,31 +304,29 @@ def crunchpatches(uniqs = {}, minthreshold=0, maxthreshold=0, skipsize=True):
     while i < s_end:
         fn = content[i]["filename"]
 
-        if fn in uniqs:
-            mapped, _ = uniqs[fn]
-            if mapped:
-                i = i + 2
-                continue
-
         patch = diskfn(fn)
         pixels = diskfn(content[i+1]["filename"])
 
-        sha1 = hashlib.sha1()
-        data = b""
-        with open(patch, "rb") as f:
-            data = f.read()
-        sha1 = hashlib.sha1()
-        sha1.update(data)
-        sha1 = sha1.hexdigest()
+        j = 0
+        for tfn in [patch, pixels]:
+            sha1 = hashlib.sha1()
+            data = b""
+            with open(tfn, "rb") as f:
+                data = f.read()
+            sha1 = hashlib.sha1()
+            sha1.update(data)
+            sha1 = sha1.hexdigest()
 
-        if sha1 not in sha1uniqs:
-            sha1uniqs[sha1] = 1
-        else:
-            sha1uniqs[sha1] = sha1uniqs[sha1] + 1
-        sha1s[i] = sha1
+            if sha1 not in sha1uniqs:
+                sha1uniqs[sha1] = 1
+            else:
+                sha1uniqs[sha1] = sha1uniqs[sha1] + 1
+            sha1s[i+j] = sha1
+            j = j + 1
 
-        cols = patchuniqs(patch, pixels)
-        uniqs[fn] = tuple([False, cols])
+        if fn not in uniqs:
+            cols = patchuniqs(patch, pixels)
+            uniqs[fn] = (False, cols, [])
 
         i = i + 2
 
@@ -350,76 +334,73 @@ def crunchpatches(uniqs = {}, minthreshold=0, maxthreshold=0, skipsize=True):
 
     while i < s_end:
         fn = content[i]["filename"]
+        pixfn = diskfn(content[i+1]["filename"])
+        pixfnsize = os.path.getsize(pixfn)
 
-        mapped, cols = uniqs[fn]
+        mapped, cols, pixfns = uniqs[fn]
         if mapped:
             i = i + 2
             continue
-        #if sha1uniqs[sha1s[i]] > 1:
-        #    i = i + 2
-        #    continue
-
-        basenm = basesprname(fn)
 
         bestpix = minthreshold-1
         bestmatch = -1
         bestcols = None
 
-        f = 0
-        while f < 31:
-            j = i + 2
-            f = f + 1
+        j = i + 2
+        while j < s_end:
+            fn2 = content[j]["filename"]
+            pixfn2 = diskfn(content[j+1]["filename"])
+            pixfnsize2 = os.path.getsize(pixfn2)
 
-            while j < s_end:
-                fn2 = content[j]["filename"]
-
-                if fn2 == fn:
-                    j = j + 2
-                    continue
-                mapped, cols2 = uniqs[fn2]
-                if mapped:
-                    j = j + 2
-                    continue
-
-                #if sha1uniqs[sha1s[j]] > 1:
-                #    j = j + 2
-                #    continue
-
-                basenm2 = basesprname(fn2)
-                #if basenm2 != basenm:
-                #    break
-
-                subname = basenm + chr(ord(fn[len(basenm):len(basenm)+1]) + f) + fn[len(basenm)+1:len(basenm)+2]
-                #if not fn2.startswith(subname):
-                #    j = j + 2
-                #    continue
-
-                pix = comparepatches(cols, cols2)
-                #print(fn, fn2, pix)
-                if pix > bestpix:
-                    if skipsize or pix > os.path.getsize(diskfn(fn2)):
-                        bestpix = pix
-                        bestmatch = j
-                        bestcols = cols2
-
+            # guard against ridiculously big lumps
+            if pixfnsize+pixfnsize2 > 62*1024:
                 j = j + 2
+                continue
+
+            if fn2 == fn:
+                j = j + 2
+                continue
+            mapped, cols2, pixfns2 = uniqs[fn2]
+            if mapped or len(pixfns2) > 0:
+                j = j + 2
+                continue
+
+            pix = comparepatches(cols, cols2)
+            if pix > bestpix:
+                if skipsize or sha1uniqs[sha1s[j]] == 1 or pix > os.path.getsize(diskfn(fn2)):
+                    bestpix = pix
+                    bestmatch = j
+                    bestcols = cols2
+
+            j = j + 2
 
         if bestpix >= minthreshold and (maxthreshold == 0 or bestpix < maxthreshold):
-            #print("%s" % bestmatch)
-            #print("%s\t%s\t%s" % (fn, content[bestmatch]["filename"], bestpix))
-            print("merging %s into %s, saving %s pixels" % (content[bestmatch]["filename"], content[i]["filename"], bestpix))
+            totalcnt = totalcnt + 1
+            fn2 = content[bestmatch]["filename"]
+            pixfn2 = diskfn(content[bestmatch+1]["filename"])
+            print("merging %s into %s, saving %s pixels" % (fn2, fn, bestpix))
 
-            mergepatches(diskfn(content[i+1]["filename"]), cols, diskfn(content[bestmatch]["filename"]), diskfn(content[bestmatch+1]["filename"]))
+            cols = mergepatches(pixfn, cols, diskfn(fn2), pixfn2)
             totalpix += bestpix
-            #content[bestmatch+1]["filename"] = content[i+1]["filename"]
-            uniqs[content[bestmatch]["filename"]] = (True, bestcols)
-            uniqs[fn] = (True, cols)
-            #break
+
+            pixfns.append(pixfn2)
+            pixfns = pixfns + pixfns2
+
+            uniqs[fn2] = (True, bestcols, [])
+            uniqs[fn] = (False, cols, pixfns)
+
+            # copy pixels
+            with open(pixfn, "rb") as fin:
+                #print("%s -> %s" % (pixfn, pixfns))
+                pixels = fin.read()
+                for pixfn2 in pixfns:
+                    with open(pixfn2, "wb") as fout:
+                        fout.write(pixels)
 
         i = i + 2
 
     print("total\t\t%s" % totalpix)
-    return uniqs
+    return uniqs, totalcnt
 
 def optimizepatches():
     _, s_start = findcontent(content, "S_START")
@@ -465,9 +446,16 @@ class CommandCrunch(CommandPatchOpt):
         print("Crunching patches...")
 
         uniqs = {}
-        uniqs = crunchpatches(uniqs, minthreshold=100)
-        uniqs = crunchpatches(uniqs, minthreshold=25)
-        uniqs = crunchpatches(uniqs, minthreshold=10)
+        minthreshold = 10000
+        while True:
+            uniqs, cnt = crunchpatches(uniqs, minthreshold=minthreshold)
+            if minthreshold == 16:
+                break
+            if cnt != 0:
+                continue
+            minthreshold = int(minthreshold * 0.75)
+            if minthreshold < 16:
+                minthreshold = 16
 
 mc = MultiCommand()
 
