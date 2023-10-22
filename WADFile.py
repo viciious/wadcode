@@ -370,7 +370,7 @@ class WADFile():
 
 		return cls._WADLump(offset = data_offset, name = name, data = resource.data, size = size, pad = pad)
 
-	def genlumps(self, ssf, base_offset, musgroups):
+	def genlumps(self, ssf, base_offset):
 		directory_offset = self._WAD_HEADER.size
 
 		_group_cache = {}
@@ -539,7 +539,7 @@ class WADFile():
 		return lumps
 		#return sorted(lumps, key=lambda d: d.offset)
 
-	def write(self, wad_filename, wadtype, ssf, base_offset, musgroups):
+	def write(self, wad_filename, wadtype, ssf, base_offset):
 		with open(wad_filename, "wb") as f:
 			header = self._WAD_HEADER.pack({
 				"magic":			wadtype,
@@ -548,7 +548,7 @@ class WADFile():
 			})
 			f.write(header)
 
-			lumps = self.genlumps(ssf, base_offset, musgroups)
+			lumps = self.genlumps(ssf, base_offset)
 
 			for lump in lumps:
 				file_entry = self._FILE_ENTRY.pack({
