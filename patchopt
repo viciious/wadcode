@@ -105,6 +105,24 @@ def writepixels(fin, pixels):
     with open(fin, "wb") as f:
         f.write(pixels)
 
+def allsubcols(uniqcols):
+    res = {}
+    for c in uniqcols:
+        res[c] = uniqcols[c]
+    
+    for pixels in uniqcols:
+        col = uniqcols[pixels]
+        pixels = list(pixels)
+        collen = len(pixels)
+        if collen == 1:
+            continue
+        for i in range(collen-1):
+            subpixels = tuple(pixels[i+1:])
+            if subpixels not in res:
+                res[subpixels] = (col[0], collen-i-1, col[2]+i+1)
+
+    return res
+
 def optpatch(fin, fin2):
     origsize = os.path.getsize(fin)
     width, height, offs, columnofs, columns = readpatch(fin)
@@ -136,6 +154,11 @@ def optpatch(fin, fin2):
                         columns[j] = (columns[j][0], columns[j][1], x[2])
                 else:
                     uniqcols[data] = (topdelta, length, dataofs)
+                    if length > 1:
+                        for i in range(length-1):
+                            subpixels = tuple(pixels[dataofs+i+1:dataofs+length])
+                            if subpixels not in uniqcols:
+                                uniqcols[subpixels] = (topdelta, length-i-1, dataofs+i+1)
 
                 newofs, j = newofs + 4, j + 1
 
@@ -146,6 +169,7 @@ def optpatch(fin, fin2):
     saved = origsize - os.path.getsize(fin)
     if saved > 0:
         print("%s\t%s" % (fin, saved))
+    return saved
 
 def optpixels(fin, fin2):
     size = os.path.getsize(fin2)
@@ -169,10 +193,18 @@ def optpixels(fin, fin2):
         offsets = [(k,v) for k,v in offsets.items()]
         used = sorted(offsets, key=lambda x: x[0])
 
-        newpixels = bytearray()
-
-        #print(columns)
         #print(used)
+        i = 0
+        while i < len(used)-1:
+            pos, length = used[i]
+            nextpos, nextlength = used[i+1]
+            if pos+length > nextpos:
+                used = used[0:i] + used[i+1:]
+                used[i] = (pos, nextpos+nextlength-pos)
+                i = i - 1
+            i = i + 1
+
+        newpixels = bytearray()
 
         offset = 0
         k = 0
@@ -180,7 +212,7 @@ def optpixels(fin, fin2):
         while k < len(used):
             o, l = used[k]
             oo, ol = origused[k]
-            if offset < o:
+            if l > 0 and offset < o:
                 j = 0
                 while j < len(columns):
                     topdelta, length, dataofs = columns[j]
@@ -199,8 +231,6 @@ def optpixels(fin, fin2):
 
         saved = 0
 
-        #print(columns)
-        #print(len(newpixels))
         pixels.close()
 
     writepatch(fin, width, height, offs, columnofs, columns)
@@ -209,6 +239,7 @@ def optpixels(fin, fin2):
     saved = size - os.path.getsize(fin2)
     if saved > 0:
         print("%s\t%s" % (fin2, saved))
+    return saved
 
 def findcontent(content, name):
     ind = 0
@@ -246,10 +277,13 @@ def patchuniqs(fin, fin2):
     return uniqcols
 
 def mergepatches(pixfn, uniqcols, fin, fin2):
+    fullpix, partialpix = 0, 0
     origsize = os.path.getsize(pixfn)
     #print("%s %s" % (pixfn, origsize))
     width, height, offs, columnofs, columns = readpatch(fin)
 
+    subcols = allsubcols(uniqcols)
+    #subcols = uniqcols
     with open(pixfn, "ab") as f3:
         with open(fin2, "rb") as f2:
             pixels = mmap.mmap(f2.fileno(), 0, access=mmap.ACCESS_COPY)
@@ -265,14 +299,19 @@ def mergepatches(pixfn, uniqcols, fin, fin2):
                         break
 
                     data = tuple(pixels[dataofs:dataofs+length])
-                    x = uniqcols.get(data)
+                    x = subcols.get(data)
                     if not x:
                         uniqcols[data] = (topdelta, length, origsize)
+                        subcols[data] = (topdelta, length, origsize)
                         data = bytearray(data)
                         f3.write(data)
                         columns[j] = (topdelta, length, origsize)
                         origsize += len(data)
                     else:
+                        if uniqcols.get(data):
+                            fullpix += length
+                        else:
+                            partialpix += length
                         columns[j] = (topdelta, length, x[2])
 
                     j = j + 1
@@ -281,7 +320,7 @@ def mergepatches(pixfn, uniqcols, fin, fin2):
 
     writepatch(fin, width, height, offs, columnofs, columns)
 
-    return uniqcols
+    return (uniqcols, fullpix, partialpix)
 
 def comparepatches(cols, cols2):
     pix = 0
@@ -378,10 +417,11 @@ def crunchpatches(uniqs = {}, minthreshold=0, maxthreshold=0, skipsize=False):
             totalcnt = totalcnt + 1
             fn2 = content[bestmatch]["filename"]
             pixfn2 = diskfn(content[bestmatch+1]["filename"])
-            print("merging %s into %s, saving %s pixels" % (fn2, fn, bestpix))
 
-            cols = mergepatches(pixfn, cols, diskfn(fn2), pixfn2)
-            totalpix += bestpix
+            cols, fullpix, partialpix = mergepatches(pixfn, cols, diskfn(fn2), pixfn2)
+            print("merged %s into %s: %s/%s pixels in full/partial columns" % (fn2, fn, fullpix, partialpix))
+
+            totalpix = totalpix + fullpix + partialpix
 
             pixfns.append(pixfn2)
             pixfns = pixfns + pixfns2
@@ -403,6 +443,7 @@ def crunchpatches(uniqs = {}, minthreshold=0, maxthreshold=0, skipsize=False):
     return uniqs, totalcnt
 
 def optimizepatches():
+    totalpix = 0
     _, s_start = findcontent(content, "S_START")
     _, s_end = findcontent(content, "S_END")
 
@@ -414,10 +455,11 @@ def optimizepatches():
 
         print("optimizing %s" % fn)
 
-        optpatch(patch, pixels)
-        optpixels(patch, pixels)
+        totalpix += optpatch(patch, pixels)
+        totalpix += optpixels(patch, pixels)
 
         i = i + 2
+    print("total\t%s" % totalpix)
 
 class CommandPatchOpt(BaseCommand):
     def __init__(self, cmd, args):
@@ -446,7 +488,7 @@ class CommandCrunch(CommandPatchOpt):
         print("Crunching patches...")
 
         uniqs = {}
-        minthreshold = 10000
+        minthreshold = 8000
         while True:
             uniqs, cnt = crunchpatches(uniqs, minthreshold=minthreshold)
             if minthreshold == 16:
