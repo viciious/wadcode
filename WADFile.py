@@ -54,14 +54,15 @@ class WADFile():
 			self.sha1 = kwargs.pop("sha1", "")
 			self.remap_to = kwargs.pop("remap_to", "")
 			self.filename = kwargs.pop("filename", "")
+			self.padding = kwargs.pop("padding", 4)
 
 		def padded_size(self):
 			size = 0
 			if len(self.data) > 0:
 				size = len(self.data)
-				if len(self.data) & 3:
-					# pad to a multiple of 4
-					size += 4 - len(self.data) & 3
+				if len(self.data) & (self.padding-1):
+					# padding must be a power of 2
+					size += self.padding - len(self.data) & (self.padding-1)
 			return size
 
 	class _WADLump:
@@ -166,7 +167,7 @@ class WADFile():
 			header = wadfile._WAD_HEADER.unpack(mm[0:])
 			assert(header.magic == wadtype)
 
-			is_sprite = True
+			is_sprite = False
 
 			offset = header.directory_offset
 			for fileno in range(header.number_of_files):
@@ -186,7 +187,9 @@ class WADFile():
 				if compressed:
 					name = chr(ord(name[0]) & ~0x80) + name[1:]
 
-				if name == "T_START":
+				if name == "S_START":
+					is_sprite = True
+				elif name == "S_END":
 					is_sprite = False
 				if name == "STBAR":
 					is_stbar = True
@@ -227,6 +230,8 @@ class WADFile():
 			content = json.load(f)
 
 		curtag = None
+		is_sprite = False
+
 		for resource_info in content:
 			fn = ""
 			if resource_info.get("virtual") is True:
@@ -263,8 +268,17 @@ class WADFile():
 					if not tag or curtag != tag:
 						continue
 
+			if name == "S_START":
+				is_sprite = True
+			elif name == "S_END":
+				is_sprite = False
+
+			padding = 4
+			if is_sprite:
+				padding = 2
+
 			compressed = "compressed" in resource_info
-			resource = cls._WADResource(name = name, data = data, compressed = compressed, group = group, sha1 = sha1.hexdigest(), filename = fn)
+			resource = cls._WADResource(name = name, data = data, compressed = compressed, group = group, sha1 = sha1.hexdigest(), filename = fn, padding = padding)
 			wadfile.add_resource(resource)
 
 		return wadfile
