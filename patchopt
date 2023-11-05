@@ -81,14 +81,13 @@ def writepatch(fin, width, height, offs, columnofs, columns):
             writebu16(f, columnofs[i])
 
         j = 0
-        for i in range(width):
-            sentinel = False
+        sentinel = False
 
+        for i in range(width):
             while j < len(columns):
                 col, j = columns[j], j + 1
 
                 if col[0] == 255:
-                    writeu8(f, 255)
                     writeu8(f, 255)
                     sentinel = True
                     break
@@ -97,7 +96,6 @@ def writepatch(fin, width, height, offs, columnofs, columns):
                 writebu16(f, col[2])
 
             if not sentinel:
-                writeu8(f, 255)
                 writeu8(f, 255)
                 sentinel = True
 
@@ -140,7 +138,7 @@ def optpatch(fin, fin2):
                 topdelta, length, dataofs = columns[j]
 
                 if topdelta == 255:
-                    newofs, j = newofs + 2, j + 1
+                    newofs, j = newofs + 1, j + 1
                     break
 
                 data = tuple(pixels[dataofs:dataofs+length])
