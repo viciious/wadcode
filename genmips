@@ -102,6 +102,9 @@ def decompress_data(data):
     return out
 
 dirname = sys.argv[1]
+if len(sys.argv) > 2:
+    MIPLEVELS = int(sys.argv[2])
+
 with open(os.path.join(dirname, "content.json")) as f:
 	content = json.load(f)
 
@@ -214,39 +217,70 @@ def genmip(indata, width, height, d8to24, d15to8):
 
     return (outdata, outwidth, outheight)
 
-def genmips(fn, width, height, d8to24, d15to8, swap):
+def check_header(data, header, width, height):
+    if len(data) < 16:
+        return data
+
+    header = header.unpack(data[0:16])
+    if header.width == width and header.height == height and header.depth == 3:
+        return data[16:]
+    return data
+
+def genmips(fn, width, height, d8to24, d15to8, swap, header=None):
+    levels = MIPLEVELS
+    if fn.lower().startswith("sky"):
+        levels = 1
+
     #if width < (1<<MIPLEVELS) or height < (1<<MIPLEVELS):
     #    return
 
-    mips = [(bytearray(), 0, 0)] * MIPLEVELS
+    mips = [(bytearray(), 0, 0)] * levels
     mm = None
 
     with open(fn, "rb") as fin:
         print(fn)
-        mm = mmap.mmap(fin.fileno(), width*height, access=mmap.ACCESS_READ)
+        mm = mmap.mmap(fin.fileno(), 0, access=mmap.ACCESS_READ)
 
-        data = swap(mm, width, height)
+        data = mm
+        if header != None:
+            data = check_header(data, header, width, height)
+        data = swap(data, width, height)
         mips[0] = (data, width, height)
 
         mipdata = data
         mipwidth = width
         mipheight = height
 
-        for i in range(MIPLEVELS-1):
+        for i in range(levels-1):
             mipdata, mipwidth, mipheight = genmip(mipdata, mipwidth, mipheight, d8to24, d15to8)
             mips[i+1] = (mipdata, mipwidth, mipheight)
     if mm:
         mm.close()
 
     with open(fn, "wb") as fout:
-        for i in range(MIPLEVELS):
+        if header:
+            header = header.pack({"width": width, "height": height, "depth": 3, "index": 0, "flags": 3, "pad2": 0, "pad3": 0, "pad4": 0})
+            fout.write(header)
+        for i in range(levels):
             fout.write(swap(mips[i][0], mips[i][2], mips[i][1]))
 
 # lump to json
 tex1 = findcontent(content, "TEXTURE1")
 tex1name = os.path.join(dirname, tex1["filename"])
 
+
 with open(tex1name, "rb") as fin:
+    JagObjHeader = NamedStruct((
+        ("h", "width"),
+        ("h", "height"),
+        ("h", "depth"),
+        ("h", "index"),
+        ("h", "flags"),
+        ("h", "pad2"),
+        ("h", "pad3"),
+        ("h", "pad4"),
+        ), ">")
+
     print("loading %s" % tex1name)
     data = mmap.mmap(fin.fileno(), 0, access=mmap.ACCESS_READ)
     if "compressed" in tex1 and tex1["compressed"]:
@@ -271,11 +305,9 @@ with open(tex1name, "rb") as fin:
 
         for e in tex1.entries:
             fn = e.name.decode().rstrip('\0')
-            if fn.lower().startswith("sky"):
-                continue
             fe = findcontent(content, fn.upper())
             fn = os.path.join(dirname, fe["filename"])
-            genmips(fn, e.width, e.height, d8to24, d15to8, swaprowcol)
+            genmips(fn, e.width, e.height, d8to24, d15to8, swaprowcol, JagObjHeader)
 
         flats = False
         for e in content:
@@ -287,5 +319,5 @@ with open(tex1name, "rb") as fin:
             if flats:
                 fn = e["filename"]
                 fn = os.path.join(dirname, fn)
-                genmips(fn, 64, 64, d8to24, d15to8, noswaprowcol)
+                genmips(fn, 64, 64, d8to24, d15to8, noswaprowcol, None)
         pal.close()
