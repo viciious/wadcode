@@ -8,6 +8,9 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
+	"strings"
+	"path/filepath"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/viciious/wadcode/wadgo"
@@ -33,8 +36,8 @@ func downloadDiscordAttachment(url string) ([]byte, error) {
 	return io.ReadAll(resp.Body)
 }
 
-func saveTempFile(d []byte) (string, error) {
-	f, err := os.CreateTemp("", "")
+func saveTempFile(dir string, d []byte) (string, error) {
+	f, err := os.CreateTemp(dir, "")
 	if err != nil {
 		return "", err
 	}
@@ -43,7 +46,7 @@ func saveTempFile(d []byte) (string, error) {
 	return f.Name(), nil
 }
 
-func saveDiscordAttachment(url string) (string, []byte, error) {
+func saveDiscordAttachment(dir, url string) (string, []byte, error) {
 	data, err := downloadDiscordAttachment(url)
 	if err != nil {
 		return "", nil, err
@@ -52,12 +55,36 @@ func saveDiscordAttachment(url string) (string, []byte, error) {
 		return "", nil, errors.New("bad file size")
 	}
 
-	fn, err := saveTempFile(data)
+	fn, err := saveTempFile(dir, data)
 	if err != nil {
 		return "", nil, err
 	}
 	return fn, data[:4], err
 }
+
+func genISOImage(dir string) (string, error) {
+	var cmd *exec.Cmd
+
+	f, err := os.CreateTemp("", "")
+	if err != nil {
+		return "", err
+	}
+
+	fn := f.Name()
+	defer f.Close()
+
+	cmd = exec.Command("genisoimage", "-sysid", "SEGA SEGACD", "-volid", "DOOM32X", "-full-iso9660-filenames", "-l", "-o", fn, dir)
+
+	stdoutStderr, err := cmd.CombinedOutput()
+	fmt.Println(strings.Join(cmd.Args, " "))
+	fmt.Println(string(stdoutStderr))
+	if err != nil {
+		os.Remove(fn)
+		return "", err
+	}
+	return fn, nil
+}
+
 func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 	if m.Author.ID == s.State.User.ID {
 		return
@@ -90,7 +117,7 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		}
 
 		for i := 0; i < 2; i++ {
-			fn, header, err := saveDiscordAttachment(m.Attachments[i].URL)
+			fn, header, err := saveDiscordAttachment("", m.Attachments[i].URL)
 			if err != nil {
 				fmt.Println(err)
 				s.ChannelMessageSendReply(channel.ID, "Error creating file for attachment", ref)
@@ -149,7 +176,7 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 			return
 		}
 
-		fn, _, err := saveDiscordAttachment(m.Attachments[0].URL)
+		fn, _, err := saveDiscordAttachment("", m.Attachments[0].URL)
 		if err != nil {
 			fmt.Println(err)
 			s.ChannelMessageSendReply(channel.ID, "Error creating file for attachment", ref)
@@ -172,6 +199,53 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 			fn = "my" + fn + ".wad"
 			s.ChannelFileSendWithMessage(channel.ID, "Here's your WAD file", fn, bytes.NewReader(wad))
 		}
+	case "!iso":
+		if len(m.Attachments) == 0 {
+			s.ChannelMessageSendReply(channel.ID, "Need input files", ref)
+			return
+		}
+
+		tmpdir, err := os.MkdirTemp("", "")
+		if err != nil {
+			fmt.Println(err)
+			s.ChannelMessageSendReply(channel.ID, "Error creating temp directory", ref)
+			return
+		}
+		defer os.RemoveAll(tmpdir)
+
+		for i := range m.Attachments {
+			data, err := downloadDiscordAttachment(m.Attachments[i].URL)
+			if err != nil {
+				fmt.Println(err)
+				s.ChannelMessageSendReply(channel.ID, "Error creating file for attachment", ref)
+				return
+			}
+
+			err = os.WriteFile(filepath.Join(tmpdir, m.Attachments[i].Filename), data, 0666)
+			if err != nil {
+				fmt.Println(err)
+				s.ChannelMessageSendReply(channel.ID, "Error creating file for attachment", ref)
+				return
+			}
+		}
+
+		fn, err := genISOImage(tmpdir)
+		if err != nil {
+			fmt.Println(err)
+			s.ChannelMessageSendReply(channel.ID, "Error creating ISO image", ref)
+			return
+		}
+		defer os.Remove(fn)
+
+		file, err := os.Open(fn)
+		if err != nil {
+			fmt.Println(err)
+			s.ChannelMessageSendReply(channel.ID, "Error reading ISO image", ref)
+			return
+		}
+		defer file.Close()
+
+		s.ChannelFileSendWithMessage(channel.ID, "Here's your ISO file", "D32XR.iso", file)
 	default:
 		s.ChannelMessageSendReply(channel.ID, "No idea what you're talking about", ref)
 	}
