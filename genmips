@@ -245,7 +245,7 @@ def genmips(fn, width, height, d8to24, d15to8, swap, header=None):
         if header != None:
             data = check_header(data, header, width, height)
         data = swap(data, width, height)
-        mips[0] = (data, width, height)
+        mips[0] = (data[:width*height], width, height)
 
         mipdata = data
         mipwidth = width
