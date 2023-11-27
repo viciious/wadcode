@@ -21,21 +21,57 @@ from PIL import Image
 def writebu16(f, v):
     f.write(v.to_bytes(2, "big", signed=False))
 
-def patch2jagobj(fin, fout):
+def patch2jagobj(fin, fout, depth = 3, trans = 0, palshift = 0):
     im = Image.open(fin)
-    data = im.tobytes()
+    data = bytearray(im.tobytes())
     width = im.width
     height = im.height
+
     with open(fout, "wb") as fo:
+        flags = 0
+        if trans & 1 != 0:
+            flags |= 2
+        if palshift != 0:
+            palshift = 1
+            flags |= 4
+
         writebu16(fo, width)
         writebu16(fo, height)
-        writebu16(fo, 3) # depth
-        writebu16(fo, 0) # trans index
+        writebu16(fo, depth) # depth
+        writebu16(fo, int(trans/2)) # trans index
+        writebu16(fo, flags) # flags
         writebu16(fo, 0) # pad
         writebu16(fo, 0) # pad
         writebu16(fo, 0) # pad
-        writebu16(fo, 0) # pad
+
+        if depth == 2:
+            if trans == 0:
+                trans = 80
+            datalen = len(data)
+            i, j = 0, 0
+            while j < datalen:
+                p1 = (data[j  ]) & 0xF
+                p2 = (data[j+1]) & 0xF
+                data[i] = (p1 << 4) | p2
+                i += 1
+                j += 2
+            data = data[:i]
+
         fo.write(data)
 
-patch2jagobj(sys.argv[1], sys.argv[2])
+fin = sys.argv[1]
+fout = sys.argv[2]
+depth = 3
+trans = 0
+palshift = 0
+if len(sys.argv) > 3:
+    depth = int(sys.argv[3])
+if len(sys.argv) > 4:
+    trans = int(sys.argv[4])
+if len(sys.argv) > 4:
+    trans = int(sys.argv[4])
+if len(sys.argv) > 5:
+    palshift = int(sys.argv[5])
+
+patch2jagobj(fin, fout, depth, trans, palshift)
 
