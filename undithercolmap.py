@@ -17,7 +17,7 @@ def read_palette(filename):
             r, g, b = color[0], color[1], color[2]
             if i > 0:
                 if r == g and g == b and r < minc:
-                    minc = r
+                    minc = i
             colors.append((r,g,b))
 
     black_color = minc
