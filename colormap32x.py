@@ -40,7 +40,7 @@ tint_frac = 0
 # brightness effects.
 tint_bright = 0.5
 
-dither = True
+dither = False
 
 def read_palette(filename):
     """Read palette from file and return a list of tuples containing
@@ -65,20 +65,49 @@ def read_palette(filename):
 
 # Return closest palette entry to the given RGB triple
 
-def search_palette(palette, target, ignore=-1, ignore2=-1):
+def search_palette(palette, target, preserve_lum = True, ignore=-1, ignore2=-1):
     """Search the given palette and find the nearest matching
        color to the given color, returning an index into the
        palette of the color that best matches."""
-    best_diff = None
-    best_index = None
+
+    def dist(c1, c2):
+        r = c1[0] - c2[0]
+        g = c1[1] - c2[1]
+        b = c1[2] - c2[2]
+        return math.sqrt(r*r + g*g + b*b)
+
+    def color_linearize(c):
+        if c <= 0.04045:
+            return c / 12.92
+        return math.pow((( c + 0.055)/1.055), 2.4)
+
+    def rgb_y(c):
+        r = color_linearize(c[0] / 255.0)
+        g = color_linearize(c[1] / 255.0)
+        b = color_linearize(c[2] / 255.0)
+        return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+    def y_lstar(y):
+        if y <= (216.0/24389):
+            return y * (24389.9/27)
+        return math.pow(y,(1.0/3)) * 116 - 16
 
     # https://www.compuphase.com/cmetric.htm
-    def color_distance(c1, c2):
+    def rgb_distance(c1, c2):
+        #return dist(c1, c2)
         rmean = ( c1[0] + c2[0] ) / 2.0
         r = c1[0] - c2[0]
         g = c1[1] - c2[1]
         b = c1[2] - c2[2]
         return math.sqrt((((512.0+rmean)*r*r) / 256.0) + 4.0*g*g + (((767-rmean)*b*b)/256.0))
+
+    def rgb_lstar(c):
+        return y_lstar(rgb_y(c)) / 100.0
+    
+    best_diff = None
+    best_index = None
+    best_diff2 = None
+    best_index2 = None
 
     for i in range(len(palette)):
         if i == ignore or i <= ignore2:
@@ -86,23 +115,33 @@ def search_palette(palette, target, ignore=-1, ignore2=-1):
 
         color = palette[i]
 
-        diff = color_distance(target, color)
+        diff = rgb_distance(target, color)
 
         if best_index is None or diff < best_diff:
+            best_diff2 = best_diff
+            best_index2 = best_index
             best_diff = diff
             best_index = i
 
+    if preserve_lum and best_index2 and best_diff2 < 32:
+        y = rgb_lstar(target)
+        if y > 0.10:
+            y1 = rgb_lstar(palette[best_index])
+            y2 = rgb_lstar(palette[best_index2])
+
+            if abs(y2 - y) < abs(y1 - y):
+                return best_index2
     return best_index
 
 
-def generate_colormap(colors, palette):
+def generate_colormap(colors, palette, preserve_lum = True):
     """Given a list of colors, translate these into indexes into
        the given palette, finding the nearest color where an exact
        match cannot be found."""
     result = []
 
     for color in colors:
-        index = search_palette(palette, color)
+        index = search_palette(palette, color, preserve_lum)
         result.append(index)
 
     return result
@@ -126,6 +165,7 @@ def generate_dithered_colormap(colormap, dithered):
             result.append(dithered[c][4])
     else:
         for c in colormap:
+            result.append(dithered[c][3])
             result.append(dithered[c][3])
 
     return result
@@ -312,11 +352,20 @@ if tint_frac > 0:
 # the default colors and a palette where every entry is the "dark" color.
 dark = solid_color_list(dark_color)
 
-for i in range(32):
-    darken_factor = (1 - ((i/32)*(i/32)))
-    darkened_colors = blend_colors(dark, colors, darken_factor)
-    output_colormap(generate_dithered_colormap(swap_colormap(generate_colormap(darkened_colors, palette)), dithered))
+close_range = 0
 
+for i in range(32):
+    darken_factor = i - close_range
+    if darken_factor < 0:
+        darken_factor = 1
+    else:
+        darken_factor = darken_factor / 32.0
+        darken_factor = 1 - darken_factor
+        if darken_factor < 0:
+            darken_factor = 0
+
+    darkened_colors = blend_colors(dark, colors, darken_factor)
+    output_colormap(generate_dithered_colormap(swap_colormap(generate_colormap(darkened_colors, palette, False)), dithered))
 
 #tinted_colors = blend_colors(
 #    palette, tint_colors(colors, (0, 0, 255), tint_bright), tint_frac
@@ -325,7 +374,7 @@ for i in range(32):
 
 # Inverse color map for invulnerability effect.
 inverse_colors = invert_colors(palette)
-output_colormap(generate_dithered_colormap(swap_colormap(generate_colormap(inverse_colors, palette)), dithered))
+output_colormap(generate_dithered_colormap(swap_colormap(generate_colormap(inverse_colors, palette, False)), dithered))
 
 # Last colormap is all black, and is actually unused in Vanilla Doom
 # (it was mistakenly included by the dcolors.c utility). It's
