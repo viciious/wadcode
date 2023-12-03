@@ -10,15 +10,21 @@ patch = re.compile(r"\s*Patch\s+\"([^\"]+?)\"\s*,\s*(\d+)\s*,\s*(\d+).*")
 def parse_textures(fin):
     r = re.split(re.compile(r"WallTexture\s*"), fin.read())
     wt = []
+    w = {}
 
     for wl in r:
         wl = wl.strip()
         if len(wl) == 0:
             continue
 
+        if wl.startswith("//"):
+            continue
+
         state = 0
         for l in wl.split("\n"):
             if len(l) == 0:
+                continue
+            if l.startswith("//"):
                 continue
 
             if state == 0:
@@ -60,6 +66,11 @@ def parse_textures(fin):
                 if p["originy"] == 0: del p["originy"]
                 w["patches"].append(p)
                 continue
+  
+        if state != 0:
+            print("Incomplete wall definition" % w)
+            sys.exit(1)
+
 
     wt = sorted(wt, key=lambda x: x["name"])
 
