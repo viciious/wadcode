@@ -1,0 +1,55 @@
+#!/usr/bin/python3
+
+import sys
+import os
+from PIL import Image
+
+#	Copyright (C) 2023 Victor Luchits
+#
+#	This file is free software; you can redistribute it and/or modify
+#	it under the terms of the GNU General Public License as published by
+#	the Free Software Foundation; this program is ONLY licensed under
+#	version 3 of the License, later versions are explicitly excluded.
+#
+#	This file is distributed in the hope that it will be useful,
+#	but WITHOUT ANY WARRANTY; without even the implied warranty of
+#	MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#	GNU General Public License for more details.
+#
+#	You should have received a copy of the GNU General Public License
+#	along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+def writebu16(f, v):
+    f.write(v.to_bytes(2, "big", signed=False))
+
+def swaprowcol(indata, width, height):
+    outdata = bytearray()
+    for i in range(width):
+        for j in range(height):
+            outdata.append(indata[j*width+i])
+    return outdata
+
+def patch2jagobj(fin, fout):
+    im = Image.open(fin)
+    data = bytearray(im.tobytes())
+    width = im.width
+    height = im.height
+    name = os.path.splitext(os.path.basename(fout))[0]
+
+    with open(fout, "wb") as fo:
+        writebu16(fo, width)
+        writebu16(fo, height)
+        writebu16(fo, 3) # depth
+        writebu16(fo, 0) # trans index
+        writebu16(fo, 1) # flags: col-major
+        writebu16(fo, 0) # pad
+        writebu16(fo, 0) # pad
+        writebu16(fo, 0) # pad
+        fo.write(swaprowcol(data, width, height))
+        print('{\n    "name": "%s",\n    "filename": "%s",\n    "width": %s,\n    "height": %s\n},' % (name.upper(), name, width, height))
+
+fin = sys.argv[1]
+fout = sys.argv[2]
+
+patch2jagobj(fin, fout)
+

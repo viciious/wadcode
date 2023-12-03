@@ -26,6 +26,7 @@ class Texture1():
     def __init__(self, struct_extra = "<"):
         self.entries = []
         self.patches = []
+        self.names = []
 
         self._MAP_PATCH = NamedStruct((
             ("h", "originx"),
@@ -62,6 +63,7 @@ class Texture1():
                 offset += patchsize
 
             texture1.entries.append(entry)
+            texture1.names.append(entry[0])
             i = i + 1
 
         return texture1
@@ -71,8 +73,11 @@ class Texture1():
         texture1 = cls("<")
 
         for entry in arr:
+            texture1.names.append(entry["name"].encode("latin1"))
+
+        for i, entry in enumerate(arr):
             d = {
-                "name": entry["name"].encode("latin1"),
+                "name": texture1.names[i],
                 "width": entry["width"],
                 "height": entry["height"],
                 "masked": 0,
@@ -83,25 +88,34 @@ class Texture1():
             if "masked" in entry:
                 d["masked"] = entry["masked"]
             if "patches" in entry:
-                d["patchcount"] = len(entry["patches"])
+                d["patchcount"] = 0
                 for p in entry["patches"]:
                     pel = {
                         "originx": 0,
                         "originy": 0,
-                        "patch": len(texture1.patches),
-                        "stepdir": 1,
+                        "patch": -1,
+                        "stepdir": 0,
                         "colormap": 0,
                     }
+
                     if "originx" in p: pel["originx"] = p["originx"]
                     if "originy" in p: pel["originy"] = p["originy"]
-                    if "patch" in p: pel["patch"] = p["patch"]
+                    if "patch" in p: pel["patch"] = texture1.find_tex_by_name(p["patch"])
                     if "stepdir" in p: p["stepdir"] = pel["stepdir"]
                     if "colormap" in p: pel["colormap"] = p["colormap"]
                     texture1.patches.append(texture1._MAP_PATCH.unpack(texture1._MAP_PATCH.pack(pel)))
+                    d["patchcount"] += 1
 
             texture1.entries.append(texture1._TEXTURE1_ENTRY.unpack(texture1._TEXTURE1_ENTRY.pack(d)))
 
         return texture1
+
+    def find_tex_by_name(self, name):
+        name = name.encode("latin1")
+        for i, v in enumerate(self.names):
+            if v == name:
+                return i
+        return -1
 
     def to_list(self):
         arr = []
@@ -131,9 +145,14 @@ class Texture1():
                         del pel["stepdir"]
 
                     pel = {k: v for k, v in pel.items() if v}
-                    pel["patch"] = p.patch
+                    pel["patch"] = self.names[p.patch].decode("latin1").rstrip('\0')
 
-                    el["patches"].append(pel)
+                    if entry.patchcount != 1 or pel["patch"] != el["name"]:
+                        el["patches"].append(pel)
+
+                if len(el["patches"]) == 0:
+                    del el["patches"]
+
                 poffset += entry.patchcount
 
             arr.append(el)
@@ -168,7 +187,7 @@ class Texture1():
                     "stepdir": p.stepdir,
                     "colormap": p.colormap,
                 }))
-                poffset += entry.patchcount
+            poffset += entry.patchcount
         
         dir.write(b.getbuffer())
         return dir.getvalue()
@@ -184,6 +203,7 @@ if filename2.endswith(".json"):
 
         with open(filename2, "wt") as fout:
             json.dump(tex1.to_list(), fp = fout, indent = 4, sort_keys = True)
+            fout.write("\n")
 
 elif filename1.endswith(".json"):
     # json to lump
