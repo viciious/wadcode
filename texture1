@@ -85,8 +85,8 @@ class Texture1():
                 "patchcount": 0,
             }
 
-            if "masked" in entry:
-                d["masked"] = entry["masked"]
+            if "masked" in entry and entry["masked"]:
+                d["masked"] = 1
             if "patches" in entry:
                 d["patchcount"] = 0
                 for p in entry["patches"]:
