@@ -188,7 +188,10 @@ class Texture1():
                     "colormap": p.colormap,
                 }))
             poffset += entry.patchcount
-        
+
+            if b.tell() & 3:
+                b.write(b"\x00" * (4 - (b.tell()&3)))
+
         dir.write(b.getbuffer())
         return dir.getvalue()
 
