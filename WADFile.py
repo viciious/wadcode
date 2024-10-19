@@ -52,7 +52,9 @@ class WADFile():
 			self.compressed = kwargs.pop("compressed", False)
 			self.group = kwargs.pop("group", None)
 			self.sha1 = kwargs.pop("sha1", "")
-			self.remap_to = kwargs.pop("remap_to", "")
+			self.remap_to = kwargs.pop("remap_to", None)
+			self.remap_offset = kwargs.pop("remap_offset", 0)
+			self.remap_len = kwargs.pop("remap_len", 0)
 			self.filename = kwargs.pop("filename", "")
 			self.padding = kwargs.pop("padding", 4)
 
@@ -96,9 +98,26 @@ class WADFile():
 		if resource.sha1 != "":
 			self._resources_by_sha1[resource.sha1].append(resource)
 			if len(resource.data) > 0 and len(self._resources_by_sha1[resource.sha1]) > 1:
-				resource.data = b""
+				resource.remap_len = len(resource.data)
 				resource.remap_to = self._resources_by_sha1[resource.sha1][0]
+				resource.data = b""
 				print("%s is a duplicate of %s" % (resource.filename, self._resources_by_sha1[resource.sha1][0].filename))
+			elif len(resource.data) > 4:
+				for i, resource2 in enumerate(self._resources):
+					if resource2 != resource and resource.data in resource2.data:
+						resource.remap_to = resource2
+						resource.remap_len = len(resource.data)
+						resource.remap_offset = resource2.data.find(resource.data)
+						resource.data = b""
+						print("found %s in %s" % (resource.filename, resource2.filename))
+						break
+					elif resource2 != resource and len(resource2.data) > 4 and resource2.data in resource.data:
+						resource2.remap_to = resource
+						resource2.remap_len = len(resource2.data)
+						resource2.remap_offset = resource.data.find(resource2.data)
+						resource2.data = b""
+						print("found %s in %s" % (resource2.filename, resource.filename))
+						break
 
 	@classmethod
 	def compressed_length(cls, data):
@@ -435,11 +454,18 @@ class WADFile():
 		def add_resource_lump(num, resource, data_offset):
 			#print(data_offset, resource.name)
 
-			if resource.remap_to != "":
+			if resource.remap_to != None:
 				print("remapping %s to %s" % (resource.filename, resource.remap_to.filename))
-				lump2 = lumps_sha1[resource.sha1]
-				lump = self.__class__.resource_lump(resource, lump2.offset)
-				lump.size = lump2.size
+
+				lump2 = lumps_sha1[resource.remap_to.sha1]
+				offset = lump2.offset
+				size = lump2.size
+
+				offset = offset + resource.remap_offset
+				size = resource.remap_len
+
+				lump = self.__class__.resource_lump(resource, offset)
+				lump.size = size
 				lump.pad = 0
 			else:
 				lump = self.__class__.resource_lump(resource, data_offset)
