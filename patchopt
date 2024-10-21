@@ -39,16 +39,25 @@ def readu32(f):
 def readu8(f):
     return int.from_bytes(f.read(1), "big", signed=False)
 
+def eu8(v):
+    return (v.to_bytes(1, "big", signed=False))
+
+def ebu16(v):
+    return (v.to_bytes(2, "big", signed=False))
+
+def ebu32(v):
+    return (v.to_bytes(4, "big", signed=False))
+
 def writeu8(f, v):
-    f.write(v.to_bytes(1, "big", signed=False))
+    f.write(eu8(v))
 
 def writebu16(f, v):
-    f.write(v.to_bytes(2, "big", signed=False))
+    f.write(ebu16(v))
 
 def writebu32(f, v):
-    f.write(v.to_bytes(4, "big", signed=False))
+    f.write(ebu32(v))
 
-def readpatch(fin):
+def readpatch(fin, debug=False):
     with open(fin, "rb") as f:
         width = readu16(f)
         height = readu16(f)
@@ -60,10 +69,14 @@ def readpatch(fin):
             columnofs.append(readu16(f))
         
         for i in range(width):
+            if debug:
+                print(columnofs[i])
             f.seek(columnofs[i])
             while True:
                 topdelta = readu8(f)
                 length = readu8(f)
+                if debug:
+                    print("tl", topdelta, length)
                 if topdelta == 255 or length == 0:
                     columns.append((255, 255, 0))
                     break
@@ -71,8 +84,8 @@ def readpatch(fin):
         return (width, height, offs, columnofs, columns)
     return (0, 0, 0, None, None)
 
-def writepatch(fin, width, height, offs, columnofs, columns):
-    with open(fin, "wb") as f:
+def writepatch(fin, width, height, offs, columnofs, columns, mode="wb"):
+    with open(fin, mode) as f:
         writebu16(f, width)
         writebu16(f, height)
         writebu32(f, offs)
@@ -459,6 +472,156 @@ def optimizepatches():
         i = i + 2
     print("total\t%s" % totalpix)
 
+def squishpatches(uniqs = {}):
+    totalsaved = 0
+
+    _, s_start = findcontent(content, "S_START")
+    _, s_end = findcontent(content, "S_END")
+
+    sha1uniqs = {}
+    sha1s = [''] * len(content)
+
+    i = s_start + 1
+    while i < s_end:
+        fn = content[i]["filename"]
+        pixels = diskfn(content[i+1]["filename"])
+
+        for tfn in [pixels]:
+            sha1 = hashlib.sha1()
+            data = b""
+            with open(tfn, "rb") as f:
+                data = f.read()
+            sha1 = hashlib.sha1()
+            sha1.update(data)
+            sha1 = sha1.hexdigest()
+
+            if sha1 not in sha1uniqs:
+                sha1uniqs[sha1] = [i]
+            else:
+                sha1uniqs[sha1].append(i)
+            sha1s[i] = sha1
+
+        i = i + 2
+
+    for k in sha1uniqs:
+        patches = sha1uniqs[k]
+        if len(patches) < 2:
+            continue
+
+        batch = list()
+        coluniqs = {}
+
+        n = len(patches) - 1
+        while n >= 0:
+            patch = patches[n]
+            fn = content[patch]["filename"]
+            width, height, offs, columnofs, columns = readpatch(diskfn(fn))
+            ofs = 8 + width * 2
+            patchlen = ofs
+
+            j = 0
+            rawcolumns = []
+            for i in range(width):
+                raw = bytearray()
+                sentinel = False
+
+                while j < len(columns):
+                    col, j = columns[j], j + 1
+
+                    if col[0] == 255:
+                        raw.append(255)
+                        sentinel = True
+                        break
+                    raw.append(col[0])
+                    raw.append(col[1])
+                    raw.extend(ebu16(col[2]))
+
+                if not sentinel:
+                    raw.append(255)
+                    sentinel = True
+
+                data = tuple(raw)
+                if data not in coluniqs:
+                    coluniqs[data] = (n, patchlen)
+
+                #    # add partial columns
+                #    for l in range(len(raw)-2):
+                #        data = tuple(raw[l+1:])
+                #        if data not in coluniqs:
+                #            coluniqs[data] = (n, patchlen+l+1)
+
+                    patchlen = patchlen + len(raw)
+                ofs = ofs + len(raw)
+
+                rawcolumns.append(raw)
+
+            batch.append((width, height, offs, columnofs, rawcolumns, patch, ofs, patchlen, 0))
+
+            n = n - 1
+            totalsaved = totalsaved + (ofs - patchlen)
+
+        # reverse order
+        patches = []
+        bloblen = 0
+        for n in range(len(batch)):
+            patch = list(batch.pop())
+            patch[8] = bloblen
+            patchlen = patch[7]
+            if patchlen & 1:
+                patchlen = patchlen + 1
+            bloblen = bloblen + patchlen
+            patches.append(tuple(patch))
+
+        # distances from each patch to other patches
+        dists = [0]*len(patches)
+        for n in range(len(patches)):
+            pos = patches[n][8]
+            dists[n] = [0]*len(patches)
+            for j in range(len(patches)):
+                dists[n][j] = patches[j][8] - pos
+
+        for n, patch in enumerate(patches):
+            fn = content[patch[5]]["filename"]
+            fin = diskfn(fn)
+
+            with open(fin, "wb") as f:
+                m = n
+                while m < len(patches):
+                    written = {}
+                    patch = patches[m]
+                    width, height, offs, columnofs, rawcolumns, _, _, patchlen, _ = patch
+
+                    flen = f.tell()
+                    writebu16(f, width)
+                    writebu16(f, height)
+                    writebu32(f, offs)
+
+                    for i in range(width):
+                        data = tuple(rawcolumns[i])
+                        u = coluniqs[data]
+                        colofs = dists[m][u[0]]
+                        if colofs & 1:
+                            colofs = colofs + 1
+                        colofs = colofs + u[1]
+                        writebu16(f, colofs)
+
+                    for i in range(width):
+                        data = tuple(rawcolumns[i])
+                        u = coluniqs[data]
+                        if u[0] == m and data not in written:
+                            f.write(rawcolumns[i])
+                            written[data] = True
+
+                    flen = f.tell() - flen
+                    if flen != patchlen:
+                        print(flen, patchlen)
+                        sys.exit(1)
+                    if patchlen & 1:
+                        writeu8(f, 255)
+                    m = m + 1
+
+    print("total\t\t%s" % totalsaved)
+
 class CommandPatchOpt(BaseCommand):
     def __init__(self, cmd, args):
         global dirname
@@ -497,6 +660,14 @@ class CommandCrunch(CommandPatchOpt):
             if minthreshold < 16:
                 minthreshold = 16
 
+class CommandSquish(CommandPatchOpt):
+    def __init__(self, cmd, args):
+        CommandPatchOpt.__init__(self, cmd, args)
+
+        print("Squishing patches...")
+
+        squishpatches()
+
 mc = MultiCommand()
 
 def genparser(parser):
@@ -506,5 +677,9 @@ mc.register("optimize", "Remove redundant data from individual sprite patches", 
 def genparser(parser):
 	parser.add_argument("dir", metavar = "directory", type = str, help = "Input directory that should be compiled to a WAD.")
 mc.register("crunch", "Crunch patches, removing redundant data across multiple files", genparser, action = CommandCrunch)
+
+def genparser(parser):
+	parser.add_argument("dir", metavar = "directory", type = str, help = "Input directory that should be compiled to a WAD.")
+mc.register("squish", "Crunch patches, removing redundant data across multiple files", genparser, action = CommandSquish)
 
 mc.run(sys.argv[1:])
