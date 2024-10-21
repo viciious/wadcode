@@ -104,14 +104,16 @@ class WADFile():
 				print("%s is a duplicate of %s" % (resource.filename, self._resources_by_sha1[resource.sha1][0].filename))
 			elif len(resource.data) > 4:
 				for i, resource2 in enumerate(self._resources):
-					if resource2 != resource and resource.data in resource2.data:
+					if i == len(self._resources)-1:
+						break
+					if resource.data in resource2.data:
 						resource.remap_to = resource2
 						resource.remap_len = len(resource.data)
 						resource.remap_offset = resource2.data.find(resource.data)
 						resource.data = b""
 						print("found %s in %s" % (resource.filename, resource2.filename))
 						break
-					elif resource2 != resource and len(resource2.data) > 4 and resource2.data in resource.data:
+					elif len(resource2.data) > 4 and resource2.data in resource.data:
 						resource2.remap_to = resource
 						resource2.remap_len = len(resource2.data)
 						resource2.remap_offset = resource.data.find(resource2.data)
@@ -452,8 +454,6 @@ class WADFile():
 		lumps_sha1 = {}
 
 		def add_resource_lump(num, resource, data_offset):
-			#print(data_offset, resource.name)
-
 			if resource.remap_to != None:
 				print("remapping %s to %s" % (resource.filename, resource.remap_to.filename))
 
@@ -469,8 +469,9 @@ class WADFile():
 				lump.pad = 0
 			else:
 				lump = self.__class__.resource_lump(resource, data_offset)
-				if resource.sha1 not in lumps_sha1:
-					lumps_sha1[resource.sha1] = lump
+
+			if resource.sha1 not in lumps_sha1:
+				lumps_sha1[resource.sha1] = lump
 			lumps[num] = lump
 
 			if ssf and resource.name == "PAGE7":
