@@ -557,15 +557,22 @@ def squishpatches(uniqs = {}):
 
                 data = tuple(raw)
                 if data not in coluniqs:
-                    coluniqs[data] = (n, patchlen)
+                    uniqparts = []
 
-                #    # add partial columns
-                #    for l in range(len(raw)-2):
-                #        data = tuple(raw[l+1:])
-                #        if data not in coluniqs:
-                #            coluniqs[data] = (n, patchlen+l+1)
+                    m = 4
+                    while m < len(raw):
+                        data = tuple(raw[m:])
+                        if len(data) <= 4:
+                            break
+                        if data not in coluniqs:
+                            uniqparts.append(data)
+                            coluniqs[data] = (n, patchlen+m, [])
+                        m = m + 4
 
+                    data = tuple(raw)
+                    coluniqs[data] = (n, patchlen, uniqparts)
                     patchlen = patchlen + len(raw)
+
                 ofs = ofs + len(raw)
 
                 rawcolumns.append(raw)
@@ -623,12 +630,16 @@ def squishpatches(uniqs = {}):
                     for i in range(width):
                         data = tuple(rawcolumns[i])
                         u = coluniqs[data]
+
                         if u[0] == m and data not in written:
                             f.write(rawcolumns[i])
                             written[data] = True
+                            for part in u[2]:
+                                written[part] = True
 
                     flen = f.tell() - flen
                     if flen != patchlen:
+                        print(fin)
                         print(flen, patchlen)
                         sys.exit(1)
                     if patchlen & 1:
