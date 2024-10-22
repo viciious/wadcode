@@ -479,6 +479,7 @@ def squishpatches(uniqs = {}):
     _, s_end = findcontent(content, "S_END")
 
     sha1uniqs = {}
+    nameuniqs = {}
     sha1s = [''] * len(content)
 
     i = s_start + 1
@@ -495,6 +496,10 @@ def squishpatches(uniqs = {}):
             sha1.update(data)
             sha1 = sha1.hexdigest()
 
+            name = content[i]["name"][:4]
+            if name not in nameuniqs:
+                nameuniqs[name] = sha1
+
             if sha1 not in sha1uniqs:
                 sha1uniqs[sha1] = [i]
             else:
@@ -502,6 +507,16 @@ def squishpatches(uniqs = {}):
             sha1s[i] = sha1
 
         i = i + 2
+
+    for k in sha1uniqs:
+        patches = sha1uniqs[k]
+        if len(patches) >= 2:
+            continue
+
+        patch = patches[0]
+        name = content[patch]["name"][:4]
+        sha1 = nameuniqs[name]
+        sha1uniqs[sha1].append(patch)
 
     for k in sha1uniqs:
         patches = sha1uniqs[k]
