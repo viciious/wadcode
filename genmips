@@ -23,7 +23,7 @@ import os
 from NamedStruct import NamedStruct
 from io import BytesIO
 
-MIPLEVELS = 1
+MIPLEVELS = 4
 
 class Texture1():
     def __init__(self, struct_extra = "<"):
@@ -154,9 +154,9 @@ def colormatch(r, g, b, d8to24, d24to8):
 
 def swaprowcol(indata, width, height):
     outdata = bytearray()
-    for i in range(width):
-        for j in range(height):
-            outdata.append(indata[j*width+i])
+    for i in range(height):
+        for j in range(width):
+            outdata.append(indata[j*height+i])
     return outdata
 
 def noswaprowcol(indata, width, height):
