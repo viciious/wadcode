@@ -23,7 +23,7 @@ import os
 from NamedStruct import NamedStruct
 from io import BytesIO
 
-MIPLEVELS = 4
+MIPLEVELS = 1
 
 class Texture1():
     def __init__(self, struct_extra = "<"):
@@ -224,7 +224,7 @@ def check_header(data, header, width, height):
         return data[16:]
     return data
 
-def genmips(fn, width, height, d8to24, d15to8, swap, header=None):
+def genmips(fn, width, height, d8to24, d15to8, swap, header=None, writeheader=True):
     levels = MIPLEVELS
     if fn.lower().startswith("sky"):
         levels = 1
@@ -256,7 +256,7 @@ def genmips(fn, width, height, d8to24, d15to8, swap, header=None):
         mm.close()
 
     with open(fn, "wb") as fout:
-        if header:
+        if header and writeheader:
             header = header.pack({"width": width, "height": height, "depth": 3, "index": 0, "flags": 3, "pad2": 0, "pad3": 0, "pad4": 0})
             fout.write(header)
         for i in range(levels):
@@ -302,10 +302,16 @@ with open(tex1name, "rb") as fin:
         d15to8 = {}
 
         for e in tex1.entries:
+            if e.masked != 0:
+                continue
             fn = e.name.decode().rstrip('\0')
             fe = findcontent(content, fn.upper())
+            if fe is None:
+                continue
+            if "filename" not in fe:
+                continue
             fn = os.path.join(dirname, fe["filename"])
-            genmips(fn, e.width, e.height, d8to24, d15to8, swaprowcol, JagObjHeader)
+            genmips(fn, e.width, e.height, d8to24, d15to8, swaprowcol, JagObjHeader, False)
 
         flats = False
         for e in content:
