@@ -26,6 +26,7 @@ from BaseCommand import BaseCommand
 
 dirname = ""
 content = ""
+s_endname = "S_END"
 
 def diskfn(fn):
     return os.path.join(dirname, fn)
@@ -341,11 +342,13 @@ def comparepatches(cols, cols2):
     return pix
 
 def crunchpatches(uniqs = {}, minthreshold=0, maxthreshold=0, skipsize=False):
+    global s_endname
+
     totalpix = 0
     totalcnt = 0
 
     _, s_start = findcontent(content, "S_START")
-    _, s_end = findcontent(content, "S_END")
+    _, s_end = findcontent(content, s_endname)
 
     sha1uniqs = {}
     sha1s = [''] * len(content)
@@ -454,9 +457,11 @@ def crunchpatches(uniqs = {}, minthreshold=0, maxthreshold=0, skipsize=False):
     return uniqs, totalcnt
 
 def optimizepatches():
+    global s_endname
+
     totalpix = 0
     _, s_start = findcontent(content, "S_START")
-    _, s_end = findcontent(content, "S_END")
+    _, s_end = findcontent(content, s_endname)
 
     i = s_start + 1
     while i < s_end:
@@ -473,10 +478,12 @@ def optimizepatches():
     print("total\t%s" % totalpix)
 
 def squishpatches(uniqs = {}):
+    global s_endname
+
     totalsaved = 0
 
     _, s_start = findcontent(content, "S_START")
-    _, s_end = findcontent(content, "S_END")
+    _, s_end = findcontent(content, s_endname)
 
     sha1uniqs = {}
     nameuniqs = {}
@@ -652,6 +659,7 @@ class CommandPatchOpt(BaseCommand):
     def __init__(self, cmd, args):
         global dirname
         global content
+        global s_endname
 
         BaseCommand.__init__(self, cmd, args)
 
@@ -659,6 +667,7 @@ class CommandPatchOpt(BaseCommand):
         with open(os.path.join(dirname, "content.json")) as f:
             content = json.load(f)
         dirname = os.path.join(dirname, "files")
+        s_endname = args.s_end
 
 class CommandOptimize(CommandPatchOpt):
     def __init__(self, cmd, args):
@@ -697,15 +706,18 @@ class CommandSquish(CommandPatchOpt):
 mc = MultiCommand()
 
 def genparser(parser):
-	parser.add_argument("dir", metavar = "directory", type = str, help = "Input directory that should be compiled to a WAD.")
+    parser.add_argument("--s_end", default = "S_END", type = str, help = "S_END lump name.")
+    parser.add_argument("--dir", metavar = "directory", type = str, help = "Input directory that should be compiled to a WAD.")
 mc.register("optimize", "Remove redundant data from individual sprite patches", genparser, action = CommandOptimize)
 
 def genparser(parser):
-	parser.add_argument("dir", metavar = "directory", type = str, help = "Input directory that should be compiled to a WAD.")
+    parser.add_argument("--s_end", default = "S_END", type = str, help = "S_END lump name.")
+    parser.add_argument("--dir", metavar = "directory", type = str, help = "Input directory that should be compiled to a WAD.")
 mc.register("crunch", "Crunch patches, removing redundant data across multiple files", genparser, action = CommandCrunch)
 
 def genparser(parser):
-	parser.add_argument("dir", metavar = "directory", type = str, help = "Input directory that should be compiled to a WAD.")
+    parser.add_argument("--s_end", default = "S_END", type = str, help = "S_END lump name.")
+    parser.add_argument("--dir", metavar = "directory", type = str, help = "Input directory that should be compiled to a WAD.")
 mc.register("squish", "Crunch patches, removing redundant data across multiple files", genparser, action = CommandSquish)
 
 mc.run(sys.argv[1:])
