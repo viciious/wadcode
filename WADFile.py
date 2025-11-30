@@ -55,6 +55,7 @@ class WADFile():
 			self.remap_to = kwargs.pop("remap_to", None)
 			self.remap_offset = kwargs.pop("remap_offset", 0)
 			self.remap_len = kwargs.pop("remap_len", 0)
+			self.remap_size = kwargs.pop("remap_size", 0)
 			self.filename = kwargs.pop("filename", "")
 			self.padding = kwargs.pop("padding", 4)
 
@@ -99,7 +100,10 @@ class WADFile():
 			self._resources_by_sha1[resource.sha1].append(resource)
 			if len(resource.data) > 0 and len(self._resources_by_sha1[resource.sha1]) > 1:
 				resource.remap_len = len(resource.data)
+				resource.remap_size = resource.remap_len
 				resource.remap_to = self._resources_by_sha1[resource.sha1][0]
+				if resource.compressed:
+					resource.remap_size = len(self.decompress_data(resource.data))
 				resource.data = b""
 				print("%s is a duplicate of %s" % (resource.filename, self._resources_by_sha1[resource.sha1][0].filename))
 			elif len(resource.data) > 4:
@@ -109,6 +113,7 @@ class WADFile():
 					if resource.data in resource2.data:
 						resource.remap_to = resource2
 						resource.remap_len = len(resource.data)
+						resource.remap_size = resource.remap_len
 						resource.remap_offset = resource2.data.find(resource.data)
 						resource.data = b""
 						print("found %s in %s" % (resource.filename, resource2.filename))
@@ -116,6 +121,7 @@ class WADFile():
 					elif len(resource2.data) > 4 and resource2.data in resource.data:
 						resource2.remap_to = resource
 						resource2.remap_len = len(resource2.data)
+						resource2.remap_size = resource2.remap_len
 						resource2.remap_offset = resource.data.find(resource2.data)
 						resource2.data = b""
 						print("found %s in %s" % (resource2.filename, resource.filename))
@@ -196,8 +202,6 @@ class WADFile():
 				fileinfo = wadfile._FILE_ENTRY.unpack(mm[offset:offset+size])
 				offset += size
 
-				is_stbar = False
-
 				name = fileinfo.name.rstrip(b"\x00").decode("latin1")
 				if len(name) == 0:
 					compressed = False
@@ -212,14 +216,10 @@ class WADFile():
 					is_sprite = True
 				elif name == "S_END":
 					is_sprite = False
-				if name == "STBAR":
-					is_stbar = True
 
 				data = mm[fileinfo.offset:]
 				if compressed:
-					if is_stbar:
-						decompress = True
-					elif is_sprite:
+					if is_sprite:
 						decompress = decompress_sprites
 					else:
 						decompress = decompress_other
@@ -421,16 +421,6 @@ class WADFile():
 			_group_cache[group] = size
 			return size
 
-		# assign groups to map lumps
-		last_group = None
-		for resource in self._resources:
-			group = resource.group
-			if group is not None:
-				last_group = group
-				continue
-			if resource.name.lower() in self.__class__._maplumps:
-				resource.group = last_group
-
 		# assign groups to sprites
 		s_start = [i for i, x in enumerate(self._resources) if x.name == "S_START"][0]
 		s_end = [i for i, x in enumerate(self._resources) if x.name == "S_END"][0]
@@ -444,12 +434,6 @@ class WADFile():
 			self._resources[s_start+1+i+1].group = res1.name
 			i += 2
 
-		t_start = [i for i, x in enumerate(self._resources) if x.name == "T_START"][0]
-		t_end = [i for i, x in enumerate(self._resources) if x.name == "T_END"][0]
-
-		f_start = [i for i, x in enumerate(self._resources) if x.name == "F_START"][0]
-		f_end = [i for i, x in enumerate(self._resources) if x.name == "F_END"][0]
-
 		lumps = [None] * len(self._resources)
 		lumps_sha1 = {}
 
@@ -462,7 +446,7 @@ class WADFile():
 				size = lump2.size
 
 				offset = offset + resource.remap_offset
-				size = resource.remap_len
+				size = resource.remap_size
 
 				lump = self.__class__.resource_lump(resource, offset)
 				lump.size = size
@@ -473,13 +457,6 @@ class WADFile():
 			if resource.sha1 not in lumps_sha1:
 				lumps_sha1[resource.sha1] = lump
 			lumps[num] = lump
-
-			if ssf and resource.name == "PAGE7":
-				page7_offset = 0x380000 - base_offset - data_offset
-				if page7_offset < 0:
-					print("PAGE7 overrun: %d bytes" % page7_offset)
-					sys.exit(1)
-				#lump.pad = page7_offset
 
 			data_offset += len(lump.data) + lump.pad
 			return lump, data_offset
@@ -495,13 +472,6 @@ class WADFile():
 					first_unmapped = i + 1
 					continue
 
-				if lumps[t_start] and lumps[t_end] is None and (i < t_start or i > t_end):
-					continue
-				if lumps[s_start] and lumps[s_end] is None and (i < s_start or i > s_end):
-					continue
-				if lumps[f_start] and lumps[f_end] is None and (i < f_start or i > f_end):
-					continue
-
 				size = resource.padded_size()
 				page = math.floor((base_offset + data_offset) / 0x80000)
 				if ssf:
@@ -515,12 +485,11 @@ class WADFile():
 
 					# do not allow lumps or groups to cross over into the next page block
 					if page >= 5:
-						end_page = math.floor((base_offset + data_offset + size) / 0x80000)
-						if page != end_page:
-							# do not shuffle sprite lumps
-							if first_unmapped >= s_start and first_unmapped < s_end:
+						if resource.remap_to is None:
+							end_page = math.floor((base_offset + data_offset + size) / 0x80000)
+							if page != end_page:
+								print("Can't fit %s into the page" % (resource.name))
 								break
-							continue
 
 					if group:
 						for j, resource2 in enumerate(self._resources[first_unmapped:]):
@@ -531,21 +500,6 @@ class WADFile():
 								first_lump = lump
 							mapped_count = mapped_count + 1
 						continue
-
-				# do not shuffle sprite lumps
-				if first_unmapped >= s_start and first_unmapped < s_end:
-					if i >= s_end:
-						break
-
-				# do not shuffle texture lumps
-				if first_unmapped >= t_start and first_unmapped < t_end:
-					if i >= t_end:
-						break
-
-				# do not shuffle flat lumps
-				if first_unmapped >= f_start and first_unmapped < f_end:
-					if i >= f_end:
-						break
 
 				lump, data_offset = add_resource_lump(i, resource, data_offset)
 				if first_lump is None:
