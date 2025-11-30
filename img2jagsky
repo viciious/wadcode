@@ -1,0 +1,134 @@
+#!/usr/bin/python3
+
+import sys
+import mmap
+from PIL import Image
+
+#	Copyright (C) 2023 Victor Luchits
+#
+#	This file is free software; you can redistribute it and/or modify
+#	it under the terms of the GNU General Public License as published by
+#	the Free Software Foundation; this program is ONLY licensed under
+#	version 3 of the License, later versions are explicitly excluded.
+#
+#	This file is distributed in the hope that it will be useful,
+#	but WITHOUT ANY WARRANTY; without even the implied warranty of
+#	MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#	GNU General Public License for more details.
+#
+#	You should have received a copy of the GNU General Public License
+#	along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+def writebu16(f, v):
+    f.write(v.to_bytes(2, "big", signed=False))
+
+def sqcolordist(rgb1, rgb2):
+    ravg = (rgb1[0] + rgb2[0]) / 2
+    r = rgb1[0] - rgb2[0]
+    g = rgb1[1] - rgb2[1]
+    b = rgb1[2] - rgb2[2]
+    return (((512 + ravg) * r *r )/256) + 4 * g * g + (((767 - ravg)*b*b)/256)
+
+def colormatch(r, g, b, d8to24):
+    best = 0
+    bestd = 0x1000000
+
+    for j in range(256):
+        if j == 0:
+            continue
+        d = sqcolordist((r, g, b), d8to24[j])
+        if d < bestd:
+            best = j
+            bestd = d
+
+    return best
+
+def swaprowcol(indata, width, height):
+    outdata = bytearray()
+    for i in range(height):
+        for j in range(width):
+            outdata.append(indata[j*height+i])
+    return outdata
+
+def patch2jagsky(fin, fout, colormap):
+    im = Image.open(fin)
+    data = bytearray(im.tobytes())
+    width = im.width
+    height = im.height
+    depth = 2
+
+    data = swaprowcol(data, int(height), int(width))
+
+    with open(fout, "wb") as fo:
+        flags = 1
+
+        writebu16(fo, width)
+        writebu16(fo, height)
+        writebu16(fo, depth) # depth
+        writebu16(fo, 0) # trans index
+        writebu16(fo, flags) # flags
+        writebu16(fo, 0) # pad
+        writebu16(fo, 0) # pad
+        writebu16(fo, 0) # pad
+
+        if depth == 2:
+            datalen = len(data)
+            i, j = 0, 0
+            while j < datalen:
+                p1 = (data[j  ]) & 0xF
+                p2 = (data[j+1]) & 0xF
+                data[i] = (p1 << 4) | p2
+                i += 1
+                j += 2
+            data = data[:i]
+
+        fo.write(data)
+
+        for i in range (16):
+            data[i] = colormap[i]
+        fo.write(data[0:16])
+
+fin = sys.argv[1]
+fout = sys.argv[2]
+depth = 2
+trans = 0
+
+def loadpal(palname):
+    print("loading %s" % palname)
+    with open(palname, "rb") as fin:
+        pal = mmap.mmap(fin.fileno(), 0, access=mmap.ACCESS_READ)
+        d8to24 = [(0,0,0)] * 256
+
+        for i in range(256):
+            r = pal[i*3+0]
+            g = pal[i*3+1]
+            b = pal[i*3+2]
+            d8to24[i] = (r,g,b)
+        return d8to24
+
+def loadhexpal(palname):
+    print("loading %s" % palname)
+    hexpal = [(0,0,0)] * 16
+    i = 0
+    with open(palname, "rt") as fin:
+        for line in fin:
+            if line[0] != "#":
+                continue
+            hex_code = line[1:]
+            r = int(hex_code[0:2], 16)
+            g = int(hex_code[2:4], 16)
+            b = int(hex_code[4:6], 16)
+            hexpal[i] = (r,g,b)
+            i = i + 1
+    return hexpal
+
+d8to24 = loadpal(sys.argv[3])
+hexpal = loadhexpal(sys.argv[4])
+
+colormap = [0]*16
+for i in range(16):
+    rgb = hexpal[i]
+    colormap[i] = colormatch(rgb[0], rgb[1], rgb[2], d8to24)
+
+patch2jagsky(fin, fout, colormap)
+
