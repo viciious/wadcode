@@ -22,13 +22,15 @@ import struct
 import os
 from NamedStruct import NamedStruct
 from io import BytesIO
+from PIL import Image
 
-MIPLEVELS = 4
+MIPLEVELS = 1
 
 class Texture1():
     def __init__(self, struct_extra = "<"):
         self.entries = []
         self.patches = []
+        self.names = []
 
         self._MAP_PATCH = NamedStruct((
             ("h", "originx"),
@@ -69,6 +71,55 @@ class Texture1():
 
         return texture1
 
+    @classmethod
+    def create_from_list(cls, arr):
+        texture1 = cls("<")
+
+        for entry in arr:
+            texture1.names.append(entry["name"].encode("latin1"))
+
+        for i, entry in enumerate(arr):
+            d = {
+                "name": texture1.names[i],
+                "width": entry["width"],
+                "height": entry["height"],
+                "masked": 0,
+                "columndirectory": 0,
+                "patchcount": 0,
+            }
+
+            if "masked" in entry and entry["masked"]:
+                d["masked"] = 1
+            if "patches" in entry:
+                d["patchcount"] = 0
+                for p in entry["patches"]:
+                    pel = {
+                        "originx": 0,
+                        "originy": 0,
+                        "patch": -1,
+                        "stepdir": 0,
+                        "colormap": 0,
+                    }
+
+                    if "originx" in p: pel["originx"] = p["originx"]
+                    if "originy" in p: pel["originy"] = p["originy"]
+                    if "patch" in p: pel["patch"] = texture1.find_tex_by_name(p["patch"])
+                    if "stepdir" in p: p["stepdir"] = pel["stepdir"]
+                    if "colormap" in p: pel["colormap"] = p["colormap"]
+                    texture1.patches.append(texture1._MAP_PATCH.unpack(texture1._MAP_PATCH.pack(pel)))
+                    d["patchcount"] += 1
+
+            texture1.entries.append(texture1._TEXTURE1_ENTRY.unpack(texture1._TEXTURE1_ENTRY.pack(d)))
+
+        return texture1
+
+    def find_tex_by_name(self, name):
+        name = name.encode("latin1")
+        for i, v in enumerate(self.names):
+            if v == name:
+                return i
+        return -1
+
 def decompress_data(data):
     compbits = 0
     compbitslen = 0
@@ -101,15 +152,22 @@ def decompress_data(data):
 
     return out
 
+bpp = 3
+writeheader = False
 dirname = sys.argv[1]
 if len(sys.argv) > 2:
     MIPLEVELS = int(sys.argv[2])
+if len(sys.argv) > 3:
+    bpp = int(sys.argv[3])
+    writeheader = True
 
 with open(os.path.join(dirname, "content.json")) as f:
 	content = json.load(f)
 
-def findcontent(content, name):
+def findcontent(content, name, last=False):
     in_sounds = False
+    if last:
+        content = reversed(content)
     for e in content:
         if "name" not in e:
             continue
@@ -125,8 +183,10 @@ def findcontent(content, name):
             return e
     return None
 
-dirname = os.path.join(dirname, "files")
-palname = os.path.join(dirname, findcontent(content, "PLAYPALS")["filename"])
+filesdir = os.path.join(dirname, "files")
+palname = os.path.join(filesdir, findcontent(content, "PLAYPALS")["filename"])
+cmapname = os.path.join(filesdir, findcontent(content, "COLORMAP", True)["filename"])
+colormap = bytearray(256)
 
 def sqcolordist(rgb1, rgb2):
     ravg = (rgb1[0] + rgb2[0]) / 2
@@ -208,23 +268,97 @@ def genmip(indata, width, height, d8to24, d15to8):
             g = (g >> 2) & 0xff
             b = (b >> 2) & 0xff
 
-            outdata.append(colormatch(r, g, b, d8to24, d15to8))
+            c = colormatch(r, g, b, d8to24, d15to8)
+            outdata.append(c)
             n = n + 2
 
         inp = inp + width*2
 
     return (outdata, outwidth, outheight)
 
+def countcolors(name, data, width, height):
+    colormap = {}
+    for i in range(height):
+        for j in range(width):
+            c = data[j*height+i]
+            colormap[c] = 1
+    print ("Unique colors in", name, ":", len(colormap), "size:", width*height, "width:", width, "height:", height)
+    return len(colormap)
+
 def check_header(data, header, width, height):
     if len(data) < 16:
-        return data
+        return (data, None)
 
     header = header.unpack(data[0:16])
-    if header.width == width and header.height == height and header.depth == 3:
-        return data[16:]
+    if header.width == width and header.height == height and header.depth in (2,3):
+        return (data[16:], header)
+    return (data, None)
+
+def convto4bpp(data, width, height, d8to24, d15to8):
+    global colormap
+
+    i, j = 0, 0
+
+    extra = 0
+    if (height & 1) != 0:
+        extra = 1
+
+    image = Image.frombytes('P', (height, width), data, 'raw', 'P')
+    image.putpalette(pal)
+    image = image.convert('RGB')
+    image = image.convert('P', palette=Image.ADAPTIVE, colors=16)
+    data = bytearray(image.tobytes())
+    palette = image.getpalette()
+
+    w = 0
+    while w < width:
+        h = 0
+        while h < (height & ~extra):
+            p1 = (data[j  ]) & 0xF
+            p2 = (data[j+1]) & 0xF
+            data[i] = (p1 << 4) | p2
+
+            i += 1
+            j += 2
+            h += 2
+
+        if extra != 0:
+            p1 = (data[j]) & 0xF
+            data[i] = p1 << 4
+            i += 1
+            j += 1
+
+        w += 1
+
+    data = data[:i]
+
+    i = 0
+    cmap = bytearray(33*16*2)
+    for l in range(33):
+        plen = int(len(palette)/3)
+
+        for k in range(plen):
+            m = colormatch(palette[k*3+0], palette[k*3+1], palette[k*3+2], d8to24, d15to8)
+            if (m & 128) != 0:
+                m = (m & 0x7f) - 128
+            m = l*256 + 128 + m
+            m = colormap[m]
+            cmap[i  ] = m
+            cmap[i+1] = m
+            i = i + 2
+
+        if plen < 16:
+            for k in range(16-plen):
+                cmap[i  ] = 0
+                cmap[i+1] = 0
+                i = i + 2
+
+    return data + cmap
+
+def noconv(data, width, height, d8to24, d15to8):
     return data
 
-def genmips(fn, width, height, d8to24, d15to8, swap, header=None, writeheader=True):
+def genmips(fn, width, height, d8to24, d15to8, swap, bpp, headerstr=None, writeheader=True):
     levels = MIPLEVELS
     if fn.lower().startswith("sky"):
         levels = 1
@@ -240,8 +374,11 @@ def genmips(fn, width, height, d8to24, d15to8, swap, header=None, writeheader=Tr
         mm = mmap.mmap(fin.fileno(), 0, access=mmap.ACCESS_READ)
 
         data = mm
-        if header != None:
-            data = check_header(data, header, width, height)
+        if headerstr != None:
+            data, header = check_header(data, headerstr, width, height)
+            if header and header.depth == 2:
+                print("bit depth is 2, skipping", fn)
+                return
         data = swap(data, width, height)
         mips[0] = (data[:width*height], width, height)
 
@@ -256,16 +393,25 @@ def genmips(fn, width, height, d8to24, d15to8, swap, header=None, writeheader=Tr
         mm.close()
 
     with open(fn, "wb") as fout:
-        if header and writeheader:
-            header = header.pack({"width": width, "height": height, "depth": 3, "index": 0, "flags": 3, "pad2": 0, "pad3": 0, "pad4": 0})
+        if headerstr and writeheader:
+            flags = 1
+            if bpp == 2:
+                flags = flags | 8
+            header = headerstr.pack({"width": width, "height": height, "depth": bpp, "index": 0, "flags": flags, "pad2": 0, "pad3": 0, "pad4": 0})
             fout.write(header)
+        conv = noconv
+        if bpp == 2:
+            conv = convto4bpp
+        #countcolors(fn, mips[0][0], mips[0][2], mips[0][1])
+
         for i in range(levels):
-            fout.write(swap(mips[i][0], mips[i][2], mips[i][1]))
+            data = swap(mips[i][0], mips[i][2], mips[i][1])
+            data = conv(data, mips[i][1], mips[i][2], d8to24, d15to8)
+            fout.write(data)
 
 # lump to json
 tex1 = findcontent(content, "TEXTURE1")
-tex1name = os.path.join(dirname, tex1["filename"])
-
+tex1name = os.path.join(dirname, "texture1.json")
 
 with open(tex1name, "rb") as fin:
     JagObjHeader = NamedStruct((
@@ -280,48 +426,49 @@ with open(tex1name, "rb") as fin:
         ), ">")
 
     print("loading %s" % tex1name)
-    data = mmap.mmap(fin.fileno(), 0, access=mmap.ACCESS_READ)
-    if "compressed" in tex1 and tex1["compressed"]:
-        mm = data
-        data = decompress_data(mm)
-        mm.close()
-    tex1 = Texture1.create_from_lump(data)
+    tex1 = Texture1.create_from_list(json.loads(fin.read()))
 
     print("loading %s" % palname)
     with open(palname, "rb") as fin:
         pal = mmap.mmap(fin.fileno(), 0, access=mmap.ACCESS_READ)
-        d8to24 = [(0,0,0)] * 256
 
-        print("loading palette")
-        for i in range(256):
-            r = pal[i*3+0]
-            g = pal[i*3+1]
-            b = pal[i*3+2]
-            d8to24[i] = (r,g,b)
+        with open(cmapname, "rb") as fin:
+            colormap = mmap.mmap(fin.fileno(), 0, access=mmap.ACCESS_READ)
 
-        d15to8 = {}
+            d8to24 = [(0,0,0)] * 256
 
-        for e in tex1.entries:
-            if e.masked != 0:
-                continue
-            fn = e.name.decode().rstrip('\0')
-            fe = findcontent(content, fn.upper())
-            if fe is None:
-                continue
-            if "filename" not in fe:
-                continue
-            fn = os.path.join(dirname, fe["filename"])
-            genmips(fn, e.width, e.height, d8to24, d15to8, swaprowcol, JagObjHeader, False)
+            print("loading palette")
+            for i in range(256):
+                r = pal[i*3+0]
+                g = pal[i*3+1]
+                b = pal[i*3+2]
+                d8to24[i] = (r,g,b)
 
-        flats = False
-        for e in content:
-            if e["name"] == "F_END":
-                break
-            if e["name"] == "F_START":
-                flats = True
-                continue
-            if flats:
-                fn = e["filename"]
-                fn = os.path.join(dirname, fn)
-                genmips(fn, 64, 64, d8to24, d15to8, noswaprowcol, None)
+            d15to8 = {}
+
+            for e in tex1.entries:
+                if e.masked != 0:
+                    continue
+                fn = e.name.decode().rstrip('\0')
+                fe = findcontent(content, fn.upper())
+                if fe is None:
+                    continue
+                if "filename" not in fe:
+                    continue
+                fn = os.path.join(filesdir, fe["filename"])
+                genmips(fn, e.width, e.height, d8to24, d15to8, swaprowcol, bpp, JagObjHeader, writeheader)
+
+            flats = False
+            for e in content:
+                if e["name"] == "F_END":
+                    break
+                if e["name"] == "F_START":
+                    flats = True
+                    continue
+                if flats:
+                    fn = e["filename"]
+                    fn = os.path.join(filesdir, fn)
+                    genmips(fn, 64, 64, d8to24, d15to8, noswaprowcol, 3)
+
+            colormap.close()
         pal.close()
