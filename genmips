@@ -26,156 +26,28 @@ from PIL import Image
 
 MIPLEVELS = 1
 
-class Texture1():
-    def __init__(self, struct_extra = "<"):
-        self.entries = []
-        self.patches = []
-        self.names = []
-
-        self._MAP_PATCH = NamedStruct((
-            ("h", "originx"),
-            ("h", "originy"),
-            ("h", "patch"),
-            ("h", "stepdir"),
-            ("h", "colormap"),
-            ), struct_extra)
-
-        self._TEXTURE1_ENTRY = NamedStruct((
-            ("8s", "name"),
-            ("l", "masked"),
-            ("h", "width"),
-            ("h", "height"),   
-            ("l", "columndirectory"),
-            ("h", "patchcount"),
-        ), struct_extra)
-
-    @classmethod
-    def create_from_lump(cls, data):
-        texture1 = cls("<")
-        entrysize = texture1._TEXTURE1_ENTRY.size
-        patchsize = texture1._MAP_PATCH.size
-        numtextures = struct.unpack("<I", data[0:4])[0]
-
-        for i in range(numtextures):
-            offset = struct.unpack("<I", data[(4+i*4):(4+i*4)+4])[0]
-            entry = texture1._TEXTURE1_ENTRY.unpack(data[offset:offset+entrysize])
-            offset += entrysize
-
-            for _ in range(entry.patchcount):
-                patch = texture1._MAP_PATCH.unpack(data[offset:offset+patchsize])
-                texture1.patches.append(patch)
-                offset += patchsize
-
-            texture1.entries.append(entry)
-            i = i + 1
-
-        return texture1
-
-    @classmethod
-    def create_from_list(cls, arr):
-        texture1 = cls("<")
-
-        for entry in arr:
-            texture1.names.append(entry["name"].encode("latin1"))
-
-        for i, entry in enumerate(arr):
-            d = {
-                "name": texture1.names[i],
-                "width": entry["width"],
-                "height": entry["height"],
-                "masked": 0,
-                "columndirectory": 0,
-                "patchcount": 0,
-            }
-
-            if "masked" in entry and entry["masked"]:
-                d["masked"] = 1
-            if "patches" in entry:
-                d["patchcount"] = 0
-                for p in entry["patches"]:
-                    pel = {
-                        "originx": 0,
-                        "originy": 0,
-                        "patch": -1,
-                        "stepdir": 0,
-                        "colormap": 0,
-                    }
-
-                    if "originx" in p: pel["originx"] = p["originx"]
-                    if "originy" in p: pel["originy"] = p["originy"]
-                    if "patch" in p: pel["patch"] = texture1.find_tex_by_name(p["patch"])
-                    if "stepdir" in p: p["stepdir"] = pel["stepdir"]
-                    if "colormap" in p: pel["colormap"] = p["colormap"]
-                    texture1.patches.append(texture1._MAP_PATCH.unpack(texture1._MAP_PATCH.pack(pel)))
-                    d["patchcount"] += 1
-
-            texture1.entries.append(texture1._TEXTURE1_ENTRY.unpack(texture1._TEXTURE1_ENTRY.pack(d)))
-
-        return texture1
-
-    def find_tex_by_name(self, name):
-        name = name.encode("latin1")
-        for i, v in enumerate(self.names):
-            if v == name:
-                return i
-        return -1
-
-def decompress_data(data):
-    compbits = 0
-    compbitslen = 0
-
-    n = 0
-    out = bytearray()
-    while True:
-        if compbitslen == 0:
-            compbits = data[n]
-            compbitslen = 8
-            n += 1
-
-        if compbits & 1 != 0:
-            # decompress
-            bpos = (data[n] << 4) | (data[n+1] >> 4)
-            blen = data[n+1] & 0xF
-            if blen == 0:
-                break
-
-            bpos = len(out) - bpos - 1
-            for i in range(blen + 1):
-                out.append(out[bpos+i])
-            n += 2
-        else:
-            out.append(data[n])
-            n += 1
-
-        compbits = compbits >> 1
-        compbitslen = compbitslen - 1
-
-    return out
-
-bpp = 3
 writeheader = False
 dirname = sys.argv[1]
 if len(sys.argv) > 2:
     MIPLEVELS = int(sys.argv[2])
 if len(sys.argv) > 3:
-    bpp = int(sys.argv[3])
-    writeheader = True
+    writeheader = int(sys.argv[3]) != 0
 
 with open(os.path.join(dirname, "content.json")) as f:
 	content = json.load(f)
 
-def findcontent(content, name, last=False):
+def findcontent(content, name, rev=False):
     in_sounds = False
-    if last:
+    if rev:
         content = reversed(content)
     for e in content:
         if "name" not in e:
             continue
         if e["name"] == "DS_START":
-            in_sounds = True
+            in_sounds = not rev
             continue
         if e["name"] == "DS_END":
-            in_sounds = False
+            in_sounds = rev
             continue
         if in_sounds:
             continue
@@ -410,7 +282,6 @@ def genmips(fn, width, height, d8to24, d15to8, swap, bpp, headerstr=None, writeh
             fout.write(data)
 
 # lump to json
-tex1 = findcontent(content, "TEXTURE1")
 tex1name = os.path.join(dirname, "texture1.json")
 
 with open(tex1name, "rb") as fin:
@@ -426,7 +297,7 @@ with open(tex1name, "rb") as fin:
         ), ">")
 
     print("loading %s" % tex1name)
-    tex1 = Texture1.create_from_list(json.loads(fin.read()))
+    arr = json.loads(fin.read())
 
     print("loading %s" % palname)
     with open(palname, "rb") as fin:
@@ -446,17 +317,24 @@ with open(tex1name, "rb") as fin:
 
             d15to8 = {}
 
-            for e in tex1.entries:
-                if e.masked != 0:
+            for i, entry in enumerate(arr):
+                if "masked" in entry and entry["masked"]:
                     continue
-                fn = e.name.decode().rstrip('\0')
+                fn = entry["name"]
                 fe = findcontent(content, fn.upper())
                 if fe is None:
                     continue
                 if "filename" not in fe:
                     continue
                 fn = os.path.join(filesdir, fe["filename"])
-                genmips(fn, e.width, e.height, d8to24, d15to8, swaprowcol, bpp, JagObjHeader, writeheader)
+              
+                bpp = 3
+                wh = writeheader
+                if "depth" in entry and entry["depth"] == 2:
+                    bpp = 2
+                    wh = True
+
+                genmips(fn, entry["width"], entry["height"], d8to24, d15to8, swaprowcol, bpp, JagObjHeader, wh)
 
             flats = False
             for e in content:
