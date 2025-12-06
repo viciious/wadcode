@@ -59,60 +59,66 @@ def writebu16(f, v):
 def writebu32(f, v):
     f.write(ebu32(v))
 
+def readpatchfile(f, debug=False):
+    width = readu16(f)
+    height = readu16(f)
+    offs = readu32(f)
+    columnofs = []
+    columns = []
+
+    for i in range(width):
+        columnofs.append(readu16(f))
+    
+    for i in range(width):
+        if debug:
+            print(columnofs[i])
+        f.seek(columnofs[i])
+        while True:
+            topdelta = readu8(f)
+            length = readu8(f)
+            if topdelta == 255 or length == 0:
+                columns.append((255, 255, 0))
+                break
+            columns.append((topdelta, length, readu16(f)))
+    return (width, height, offs, columnofs, columns)
+
 def readpatch(fin, debug=False):
     with open(fin, "rb") as f:
-        width = readu16(f)
-        height = readu16(f)
-        offs = readu32(f)
-        columnofs = []
-        columns = []
-
-        for i in range(width):
-            columnofs.append(readu16(f))
-        
-        for i in range(width):
-            if debug:
-                print(columnofs[i])
-            f.seek(columnofs[i])
-            while True:
-                topdelta = readu8(f)
-                length = readu8(f)
-                if debug:
-                    print("tl", topdelta, length)
-                if topdelta == 255 or length == 0:
-                    columns.append((255, 255, 0))
-                    break
-                columns.append((topdelta, length, readu16(f)))
-        return (width, height, offs, columnofs, columns)
+        return readpatchfile(f, debug)
     return (0, 0, 0, None, None)
+
+def buildrawcolumns(width, columns):
+    rawcolumns = []
+    j = 0
+    for i in range(width):
+        raw = bytearray()
+        while j < len(columns):
+            col, j = columns[j], j + 1
+            if col[0] == 255:
+                raw.append(255)
+                break
+            raw.append(col[0])
+            raw.append(col[1])
+            raw.extend(ebu16(col[2]))
+        rawcolumns.append(raw)
+    return rawcolumns
+
+def writerawpatchfile(f, width, height, offs, columnofs, rawcolumns):
+    writebu16(f, width)
+    writebu16(f, height)
+    writebu32(f, offs)
+
+    for i in range(width):
+        writebu16(f, columnofs[i])
+    for c in rawcolumns:
+        f.write(c)
+
+def writepatchfile(f, width, height, offs, columnofs, columns):
+    writerawpatchfile(f, width, height, offs, columnofs, buildrawcolumns(width, columns))
 
 def writepatch(fin, width, height, offs, columnofs, columns, mode="wb"):
     with open(fin, mode) as f:
-        writebu16(f, width)
-        writebu16(f, height)
-        writebu32(f, offs)
-
-        for i in range(width):
-            writebu16(f, columnofs[i])
-
-        j = 0
-        sentinel = False
-
-        for i in range(width):
-            while j < len(columns):
-                col, j = columns[j], j + 1
-
-                if col[0] == 255:
-                    writeu8(f, 255)
-                    sentinel = True
-                    break
-                writeu8(f, col[0])
-                writeu8(f, col[1])
-                writebu16(f, col[2])
-
-            if not sentinel:
-                writeu8(f, 255)
-                sentinel = True
+        writepatchfile(f, width, height, offs, columnofs, columns)
 
 def writepixels(fin, pixels):
     with open(fin, "wb") as f:
@@ -143,17 +149,13 @@ def optpatch(fin, fin2):
     uniqcols = {}
     with open(fin2, "rb") as f2:
         pixels = mmap.mmap(f2.fileno(), 0, access=mmap.ACCESS_COPY)
-        newofs = 8 + width * 2
         
         j = 0
         for i in range(width):
-            coloff, columnofs[i] = columnofs[i], newofs
-
             while j < len(columns):
                 topdelta, length, dataofs = columns[j]
-
                 if topdelta == 255:
-                    newofs, j = newofs + 1, j + 1
+                    j = j + 1
                     break
 
                 data = tuple(pixels[dataofs:dataofs+length])
@@ -172,10 +174,15 @@ def optpatch(fin, fin2):
                             subpixels = tuple(pixels[dataofs+i+1:dataofs+length])
                             if subpixels not in uniqcols:
                                 uniqcols[subpixels] = (topdelta, length-i-1, dataofs+i+1)
-
-                newofs, j = newofs + 4, j + 1
+                j = j + 1
 
         pixels.close()
+
+        rawcolums = buildrawcolumns(width, columns)
+        newofs = 8 + width * 2
+        for i in range(width):
+            columnofs[i] = newofs
+            newofs = newofs + len(rawcolums[i])
 
     writepatch(fin, width, height, offs, columnofs, columns)
 
@@ -553,27 +560,10 @@ def squishpatches(uniqs = {}):
             ofs = 8 + width * 2
             patchlen = ofs
 
-            j = 0
-            rawcolumns = []
+            rawcolumns = buildrawcolumns(width, columns)
+
             for i in range(width):
-                raw = bytearray()
-                sentinel = False
-
-                while j < len(columns):
-                    col, j = columns[j], j + 1
-
-                    if col[0] == 255:
-                        raw.append(255)
-                        sentinel = True
-                        break
-                    raw.append(col[0])
-                    raw.append(col[1])
-                    raw.extend(ebu16(col[2]))
-
-                if not sentinel:
-                    raw.append(255)
-                    sentinel = True
-
+                raw = rawcolumns[i]
                 data = tuple(raw)
                 if data not in coluniqs:
                     uniqparts = []
@@ -591,10 +581,7 @@ def squishpatches(uniqs = {}):
                     data = tuple(raw)
                     coluniqs[data] = (n, patchlen, uniqparts)
                     patchlen = patchlen + len(raw)
-
                 ofs = ofs + len(raw)
-
-                rawcolumns.append(raw)
 
             batch.append((width, height, offs, columnofs, rawcolumns, patch, ofs, patchlen, 0))
 
@@ -633,9 +620,6 @@ def squishpatches(uniqs = {}):
                     width, height, offs, columnofs, rawcolumns, _, _, patchlen, _ = patch
 
                     flen = f.tell()
-                    writebu16(f, width)
-                    writebu16(f, height)
-                    writebu32(f, offs)
 
                     for i in range(width):
                         data = tuple(rawcolumns[i])
@@ -644,17 +628,20 @@ def squishpatches(uniqs = {}):
                         if colofs & 1:
                             colofs = colofs + 1
                         colofs = colofs + u[1]
-                        writebu16(f, colofs)
+                        columnofs[i] = colofs
 
+                    newrawcolumns = []
                     for i in range(width):
                         data = tuple(rawcolumns[i])
                         u = coluniqs[data]
 
                         if u[0] == m and data not in written:
-                            f.write(rawcolumns[i])
+                            newrawcolumns.append(rawcolumns[i])
                             written[data] = True
                             for part in u[2]:
                                 written[part] = True
+
+                    writerawpatchfile(f, width, height, offs, columnofs, newrawcolumns)
 
                     flen = f.tell() - flen
                     if flen != patchlen:
