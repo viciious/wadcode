@@ -59,7 +59,7 @@ def writebu16(f, v):
 def writebu32(f, v):
     f.write(ebu32(v))
 
-def readpatchfile(f, debug=False):
+def readpatchfile(f, newfmt=True, debug=False):
     width = readu16(f)
     height = readu16(f)
     offs = readu32(f)
@@ -70,21 +70,31 @@ def readpatchfile(f, debug=False):
         columnofs.append(readu16(f))
     
     for i in range(width):
-        if debug:
-            print(columnofs[i])
         f.seek(columnofs[i])
         while True:
             topdelta = readu8(f)
+            if newfmt and topdelta == 255:
+                columns.append((255, 255, 0))
+                break
             length = readu8(f)
+            stop = False
+            if newfmt:
+                stop = length & 0x80
+                length = length & 0x7F
+                length = length + 1
             if topdelta == 255 or length == 0:
                 columns.append((255, 255, 0))
                 break
-            columns.append((topdelta, length, readu16(f)))
+            ofs = readu16(f)
+            columns.append((topdelta, length, ofs))
+            if stop:
+                columns.append((255, 255, 0))
+                break
     return (width, height, offs, columnofs, columns)
 
-def readpatch(fin, debug=False):
+def readpatch(fin, newfmt=True, debug=False):
     with open(fin, "rb") as f:
-        return readpatchfile(f, debug)
+        return readpatchfile(f, newfmt, debug)
     return (0, 0, 0, None, None)
 
 def buildrawcolumns(width, columns):
@@ -97,9 +107,27 @@ def buildrawcolumns(width, columns):
             if col[0] == 255:
                 raw.append(255)
                 break
-            raw.append(col[0])
-            raw.append(col[1])
-            raw.extend(ebu16(col[2]))
+            if col[1] == 0:
+                continue
+
+            nextlast = False
+            if j == len(columns):
+                nextlast = True
+            if not nextlast:
+                nextcol = columns[j]
+                if nextcol[0] == 255:
+                    nextlast = True
+
+            if nextlast:
+                raw.append(col[0])
+                raw.append((col[1]-1)|128)
+                raw.extend(ebu16(col[2]))
+                j = j + 1
+                break
+            else:
+                raw.append(col[0])
+                raw.append(col[1]-1)
+                raw.extend(ebu16(col[2]))
         rawcolumns.append(raw)
     return rawcolumns
 
@@ -144,7 +172,7 @@ def allsubcols(uniqcols):
 
 def optpatch(fin, fin2):
     origsize = os.path.getsize(fin)
-    width, height, offs, columnofs, columns = readpatch(fin)
+    width, height, offs, columnofs, columns = readpatch(fin, False)
 
     uniqcols = {}
     with open(fin2, "rb") as f2:
@@ -568,15 +596,15 @@ def squishpatches(uniqs = {}):
                 if data not in coluniqs:
                     uniqparts = []
 
-                    m = 4
+                    m = 3
                     while m < len(raw):
                         data = tuple(raw[m:])
-                        if len(data) <= 4:
+                        if len(data) <= 3:
                             break
                         if data not in coluniqs:
                             uniqparts.append(data)
                             coluniqs[data] = (n, patchlen+m, [])
-                        m = m + 4
+                        m = m + 3
 
                     data = tuple(raw)
                     coluniqs[data] = (n, patchlen, uniqparts)
