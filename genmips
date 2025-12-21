@@ -36,11 +36,18 @@ if len(sys.argv) > 3:
 with open(os.path.join(dirname, "content.json")) as f:
 	content = json.load(f)
 
-def findcontent(content, name, rev=False):
+def findcontent(content, name, rev=False, skip=0):
     in_sounds = False
     if rev:
         content = reversed(content)
+    found = None
     for e in content:
+        if found:
+            skip = skip - 1
+            if skip == 0:
+                if e["name"] == name:
+                    return e
+                return None
         if "name" not in e:
             continue
         if e["name"] == "DS_START":
@@ -52,13 +59,19 @@ def findcontent(content, name, rev=False):
         if in_sounds:
             continue
         if e["name"] == name:
-            return e
+            if skip != 0:
+                found = e
+            else:
+                return e
     return None
 
 filesdir = os.path.join(dirname, "files")
 palname = os.path.join(filesdir, findcontent(content, "PLAYPALS")["filename"])
 cmapname = os.path.join(filesdir, findcontent(content, "COLORMAP", True)["filename"])
+cmapname2w = os.path.join(filesdir, findcontent(content, "COLORMAP", True, 2)["filename"])
+
 colormap = bytearray(256)
+colormap2w = None
 
 def sqcolordist(rgb1, rgb2):
     ravg = (rgb1[0] + rgb2[0]) / 2
@@ -214,9 +227,14 @@ def convto4bpp(data, width, height, d8to24, d15to8):
             if (m & 128) != 0:
                 m = (m & 0x7f) - 128
             m = l*256 + 128 + m
-            m = colormap[m]
-            cmap[i  ] = m
-            cmap[i+1] = m
+            if len(colormap2) == len(colormap)*2:
+                m = m*2
+                cmap[i  ] = colormap2[m]
+                cmap[i+1] = colormap2[m+1]
+            else:
+                m = colormap[m]
+                cmap[i  ] = m
+                cmap[i+1] = m
             i = i + 2
 
         if plen < 16:
@@ -299,12 +317,16 @@ with open(tex1name, "rb") as fin:
     print("loading %s" % tex1name)
     arr = json.loads(fin.read())
 
+    if not cmapname2w:
+        cmapname2w = cmapname
+ 
     print("loading %s" % palname)
-    with open(palname, "rb") as fin:
+    with open(palname, "rb") as fin, open(cmapname, "rb") as fin2:
         pal = mmap.mmap(fin.fileno(), 0, access=mmap.ACCESS_READ)
+        colormap = mmap.mmap(fin2.fileno(), 0, access=mmap.ACCESS_READ)
 
-        with open(cmapname, "rb") as fin:
-            colormap = mmap.mmap(fin.fileno(), 0, access=mmap.ACCESS_READ)
+        with open(cmapname2w, "rb") as fin3:
+            colormap2 = mmap.mmap(fin3.fileno(), 0, access=mmap.ACCESS_READ)
 
             d8to24 = [(0,0,0)] * 256
 
@@ -348,5 +370,6 @@ with open(tex1name, "rb") as fin:
                     fn = os.path.join(filesdir, fn)
                     genmips(fn, 64, 64, d8to24, d15to8, noswaprowcol, 3)
 
-            colormap.close()
+            colormap2.close()
+        colormap.close()
         pal.close()
