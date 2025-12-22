@@ -90,7 +90,7 @@ def colormatch(r, g, b, d8to24, d24to8):
 
     for j in range(256):
         r2, g2, b2 = d8to24[j]
-        if r2 == r and g2 == g and b == b2:
+        if r2 == r and g2 == g and b == b2 and j != 0:
             d15to8[c] = j
             return j
         d = sqcolordist((r, g, b), d8to24[j])
