@@ -89,6 +89,10 @@ def colormatch(r, g, b, d8to24, d24to8):
     bestd = 0x1000000
 
     for j in range(256):
+        r2, g2, b2 = d8to24[j]
+        if r2 == r and g2 == g and b == b2:
+            d15to8[c] = j
+            return j
         d = sqcolordist((r, g, b), d8to24[j])
         if d < bestd:
             best = j
@@ -219,22 +223,21 @@ def convto4bpp(data, width, height, d8to24, d15to8):
 
     i = 0
     cmap = bytearray(33*16*2)
+    plen = int(len(palette)/3)
     for l in range(33):
-        plen = int(len(palette)/3)
-
         for k in range(plen):
             m = colormatch(palette[k*3+0], palette[k*3+1], palette[k*3+2], d8to24, d15to8)
             if (m & 128) != 0:
                 m = (m & 0x7f) - 128
-            m = l*256 + 128 + m
+            lm = l*256 + 128 + m
             if len(colormap2) == len(colormap)*2:
-                m = m*2
-                cmap[i  ] = colormap2[m]
-                cmap[i+1] = colormap2[m+1]
+                lm = lm*2
+                cmap[i  ] = colormap2[lm]
+                cmap[i+1] = colormap2[lm+1]
             else:
-                m = colormap[m]
-                cmap[i  ] = m
-                cmap[i+1] = m
+                lm = colormap[lm]
+                cmap[i  ] = lm
+                cmap[i+1] = lm
             i = i + 2
 
         if plen < 16:
