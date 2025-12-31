@@ -94,7 +94,7 @@ def colormatch(r, g, b, d8to24, d24to8):
             d15to8[c] = j
             return j
         d = sqcolordist((r, g, b), d8to24[j])
-        if d < bestd:
+        if d <= bestd:
             best = j
             bestd = d
 
