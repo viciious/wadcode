@@ -80,9 +80,9 @@ def sqcolordist(rgb1, rgb2):
     b = rgb1[2] - rgb2[2]
     return (((512 + ravg) * r *r )/256) + 4 * g * g + (((767 - ravg)*b*b)/256)
 
-def colormatch(r, g, b, d8to24, d24to8):
+def colormatch(r, g, b, d8to24, d24to8, allowtransp=False):
     c = r + (g<<8) + (b<<16)
-    if c in d24to8:
+    if c in d24to8 and c != 0:
         return d24to8[c]
 
     best = 0
@@ -90,15 +90,14 @@ def colormatch(r, g, b, d8to24, d24to8):
 
     for j in range(256):
         r2, g2, b2 = d8to24[j]
-        if r2 == r and g2 == g and b == b2 and j != 0:
-            d15to8[c] = j
+        if r2 == r and g2 == g and b == b2 and (j != 0 or allowtransp):
             return j
         d = sqcolordist((r, g, b), d8to24[j])
         if d <= bestd:
             best = j
             bestd = d
 
-    d15to8[c] = best
+    d24to8[c] = best
     return best
 
 def swaprowcol(indata, width, height):
@@ -157,7 +156,16 @@ def genmip(indata, width, height, d8to24, d15to8):
             g = (g >> 2) & 0xff
             b = (b >> 2) & 0xff
 
-            c = colormatch(r, g, b, d8to24, d15to8)
+            transp = 0
+            if p1 == 0:
+                transp = transp + 1
+            if p2 == 0:
+                transp = transp + 1
+            if p3 == 0:
+                transp = transp + 1
+            if p4 == 0:
+                transp = transp + 1
+            c = colormatch(r, g, b, d8to24, d15to8, transp >= 2)
             outdata.append(c)
             n = n + 2
 
