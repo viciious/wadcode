@@ -20,6 +20,7 @@ import os
 import mmap
 import json
 import hashlib
+import concurrent.futures
 
 from MultiCommand import MultiCommand
 from BaseCommand import BaseCommand
@@ -58,6 +59,15 @@ def writebu16(f, v):
 
 def writebu32(f, v):
     f.write(ebu32(v))
+
+def collen(col):
+    topdelta = col[0]
+    if topdelta == 255:
+        return 1
+    length = col[1]
+    if length == 0:
+        return 2
+    return 4
 
 def readpatchfile(f, newfmt=True, debug=False):
     width = readu16(f)
@@ -118,16 +128,21 @@ def buildrawcolumns(width, columns):
                 if nextcol[0] == 255:
                     nextlast = True
 
+            topdelta = col[0]
+            length = col[1]-1
+            offset = col[2]
+            offset = ebu16(offset)
+
             if nextlast:
-                raw.append(col[0])
-                raw.append((col[1]-1)|128)
-                raw.extend(ebu16(col[2]))
+                raw.append(topdelta)
+                raw.append(length|128)
+                raw.extend(offset)
                 j = j + 1
                 break
             else:
-                raw.append(col[0])
-                raw.append(col[1]-1)
-                raw.extend(ebu16(col[2]))
+                raw.append(topdelta)
+                raw.append(length)
+                raw.extend(offset)
         rawcolumns.append(raw)
     return rawcolumns
 
@@ -280,6 +295,12 @@ def optpixels(fin, fin2):
         saved = 0
 
         pixels.close()
+         
+    rawcolums = buildrawcolumns(width, columns)
+    newofs = 8 + width * 2
+    for i in range(width):
+        columnofs[i] = newofs
+        newofs = newofs + len(rawcolums[i])
 
     writepatch(fin, width, height, offs, columnofs, columns)
     writepixels(fin2, newpixels)
@@ -366,6 +387,11 @@ def mergepatches(pixfn, uniqcols, fin, fin2):
 
             pixels.close()
 
+        rawcolums = buildrawcolumns(width, columns)
+        newofs = 8 + width * 2
+        for i in range(width):
+           columnofs[i] = newofs
+           newofs = newofs + len(rawcolums[i])
     writepatch(fin, width, height, offs, columnofs, columns)
 
     return (uniqcols, fullpix, partialpix)
@@ -377,7 +403,7 @@ def comparepatches(cols, cols2):
             pix += len(col)
     return pix
 
-def crunchpatches(uniqs = {}, minthreshold=0, maxthreshold=0, skipsize=False):
+def crunchpatches(uniqs = {}, minthreshold=0, maxthreshold=0, skipsize=False, max_workers=None):
     global s_endname
     global s_startname
 
@@ -390,37 +416,40 @@ def crunchpatches(uniqs = {}, minthreshold=0, maxthreshold=0, skipsize=False):
     sha1uniqs = {}
     sha1s = [''] * len(content)
 
+    # --- Multi-threaded SHA1 Hash Pre-pass ---
+    hash_tasks = []
     i = s_start
     if "filename" not in content[i]:
         i = i + 1
     while i < s_end:
         fn = content[i]["filename"]
-
         patch = diskfn(fn)
         pixels = diskfn(content[i+1]["filename"])
-
-        j = 0
-        for tfn in [patch, pixels]:
-            sha1 = hashlib.sha1()
-            data = b""
-            with open(tfn, "rb") as f:
-                data = f.read()
-            sha1 = hashlib.sha1()
-            sha1.update(data)
-            sha1 = sha1.hexdigest()
-
-            if sha1 not in sha1uniqs:
-                sha1uniqs[sha1] = 1
-            else:
-                sha1uniqs[sha1] = sha1uniqs[sha1] + 1
-            sha1s[i+j] = sha1
-            j = j + 1
-
-        if fn not in uniqs:
-            cols = patchuniqs(patch, pixels)
-            uniqs[fn] = (False, cols, [])
-
+        hash_tasks.append((i, fn, patch, pixels))
         i = i + 2
+
+    def _hash_worker(item):
+        idx, fn, patch, pixels = item
+        results = []
+        for j, tfn in enumerate([patch, pixels]):
+            sha1 = hashlib.sha1()
+            with open(tfn, "rb") as f:
+                sha1.update(f.read())
+            results.append((idx + j, sha1.hexdigest()))
+        
+        # Calculate patchuniqs on the worker thread as well
+        cols = patchuniqs(patch, pixels)
+        return fn, patch, pixels, results, cols
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        for fn, patch, pixels, hash_results, cols in executor.map(_hash_worker, hash_tasks):
+            for idx, digest in hash_results:
+                sha1uniqs[digest] = sha1uniqs.get(digest, 0) + 1
+                sha1s[idx] = digest
+
+            if fn not in uniqs:
+                uniqs[fn] = (False, cols, [])
+    # --- End SHA1 Multi-threaded Pre-pass ---
 
     i = s_start
     if "filename" not in content[i]:
@@ -436,10 +465,12 @@ def crunchpatches(uniqs = {}, minthreshold=0, maxthreshold=0, skipsize=False):
             i = i + 2
             continue
 
-        bestpix = minthreshold-1
+        bestpix = minthreshold - 1
         bestmatch = -1
         bestcols = None
 
+        # --- Multi-threaded Inner Candidate Evaluation ---
+        candidates = []
         j = i + 2
         while j < s_end:
             fn2 = content[j]["filename"]
@@ -447,7 +478,7 @@ def crunchpatches(uniqs = {}, minthreshold=0, maxthreshold=0, skipsize=False):
             pixfnsize2 = os.path.getsize(pixfn2)
 
             # guard against ridiculously big lumps
-            if pixfnsize+pixfnsize2 > 62*1024:
+            if pixfnsize + pixfnsize2 > 62 * 1024:
                 j = j + 2
                 continue
 
@@ -459,14 +490,26 @@ def crunchpatches(uniqs = {}, minthreshold=0, maxthreshold=0, skipsize=False):
                 j = j + 2
                 continue
 
-            pix = comparepatches(cols, cols2)
-            if pix > bestpix:
-                if skipsize or sha1uniqs[sha1s[j]] == 1 or pix > os.path.getsize(diskfn(fn2)):
-                    bestpix = pix
-                    bestmatch = j
-                    bestcols = cols2
-
+            # Store payload for thread worker
+            candidates.append((j, fn2, cols2))
             j = j + 2
+
+        if candidates:
+            def _eval_candidate(item):
+                cand_j, cand_fn2, cand_cols2 = item
+                pix_val = comparepatches(cols, cand_cols2)
+                return cand_j, cand_fn2, cand_cols2, pix_val
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                results = executor.map(_eval_candidate, candidates)
+                
+                for cand_j, cand_fn2, cand_cols2, pix in results:
+                    if pix > bestpix:
+                        if skipsize or sha1uniqs[sha1s[cand_j]] == 1 or pix > os.path.getsize(diskfn(cand_fn2)):
+                            bestpix = pix
+                            bestmatch = cand_j
+                            bestcols = cand_cols2
+        # --- End Inner Loop ---
 
         if bestpix >= minthreshold and (maxthreshold == 0 or bestpix < maxthreshold):
             totalcnt = totalcnt + 1
@@ -474,19 +517,18 @@ def crunchpatches(uniqs = {}, minthreshold=0, maxthreshold=0, skipsize=False):
             pixfn2 = diskfn(content[bestmatch+1]["filename"])
 
             cols, fullpix, partialpix = mergepatches(pixfn, cols, diskfn(fn2), pixfn2)
-            print("merged %s into %s: %s/%s pixels in full/partial columns" % (fn2, fn, fullpix, partialpix))
+            print("merged %s into %s: %s/%s pixels in full/partial columns" % (fn, fn2, fullpix, partialpix))
 
             totalpix = totalpix + fullpix + partialpix
 
             pixfns.append(pixfn2)
-            pixfns = pixfns + pixfns2
+            pixfns = pixfns + uniqs[fn2][2]
 
             uniqs[fn2] = (True, bestcols, [])
             uniqs[fn] = (False, cols, pixfns)
 
             # copy pixels
             with open(pixfn, "rb") as fin:
-                #print("%s -> %s" % (pixfn, pixfns))
                 pixels = fin.read()
                 for pixfn2 in pixfns:
                     with open(pixfn2, "wb") as fout:
@@ -596,15 +638,13 @@ def squishpatches(uniqs = {}):
                 if data not in coluniqs:
                     uniqparts = []
 
-                    m = 3
+                    m = collen(raw)
                     while m < len(raw):
                         data = tuple(raw[m:])
-                        if len(data) <= 3:
-                            break
                         if data not in coluniqs:
                             uniqparts.append(data)
                             coluniqs[data] = (n, patchlen+m, [])
-                        m = m + 3
+                        m = m + collen(raw[m:])
 
                     data = tuple(raw)
                     coluniqs[data] = (n, patchlen, uniqparts)
@@ -682,6 +722,196 @@ def squishpatches(uniqs = {}):
 
     print("total\t\t%s" % totalsaved)
 
+def merge_pixel_runs_scs(runs):
+    """
+    Optimized Greedy Shortest Common Superstring (SCS) implementation.
+    Maximizes suffix-to-prefix overlap while correctly maintaining exact offsets.
+    """
+    if not runs:
+        return bytearray(), {}
+
+    # Deduplicate while preserving original run identities
+    unique_runs = tuple(set(runs))
+    num_runs = len(unique_runs)
+    
+    if num_runs == 1:
+        return bytearray(unique_runs[0]), {unique_runs[0]: 0}
+
+    # Pre-convert sequences to bytes for fast execution and slice matching
+    nodes = [bytes(r) for r in unique_runs]
+
+    # Pre-calculate all non-zero suffix-to-prefix overlaps O(N^2 * L)
+    # Stores (overlap_len, src_index, dst_index)
+    overlaps = []
+    for i in range(num_runs):
+        node_i = nodes[i]
+        len_i = len(node_i)
+        for j in range(num_runs):
+            if i == j:
+                continue
+            node_j = nodes[j]
+            max_len = min(len_i, len(node_j))
+            # Check overlaps from longest to shortest
+            for length in range(max_len, 0, -1):
+                if node_i[-length:] == node_j[:length]:
+                    overlaps.append((length, i, j))
+                    break
+
+    # Sort overlaps descending by length
+    overlaps.sort(key=lambda x: x[0], reverse=True)
+
+    # Disjoint-set / Path-linking tracking to prevent cycles
+    parent = list(range(num_runs))
+    next_node = [-1] * num_runs
+    prev_node = [-1] * num_runs
+
+    def find_root(i):
+        path = []
+        while parent[i] != i:
+            path.append(i)
+            i = parent[i]
+        for node in path:
+            parent[node] = i
+        return i
+
+    # Greedy merging phase: O(N^2)
+    for ov, i, j in overlaps:
+        if next_node[i] != -1 or prev_node[j] != -1:
+            continue
+        
+        root_i = find_root(i)
+        root_j = find_root(j)
+        
+        # Avoid forming loops
+        if root_i != root_j:
+            next_node[i] = (j, ov)
+            prev_node[j] = i
+            parent[root_j] = root_i
+
+    # Assemble concatenated path chains and compute exact offsets
+    merged_bytes = bytearray()
+    offsets = {}
+    visited = [False] * num_runs
+
+    for i in range(num_runs):
+        if prev_node[i] == -1 and not visited[i]:
+            curr = i
+            chain_start_offset = len(merged_bytes)
+            
+            while curr != -1:
+                visited[curr] = True
+                curr_node = nodes[curr]
+                
+                # Assign exact starting position in the merged bytearray
+                offsets[unique_runs[curr]] = len(merged_bytes)
+                
+                if next_node[curr] != -1:
+                    nxt, ov = next_node[curr]
+                    merged_bytes.extend(curr_node[:-ov])
+                    curr = nxt
+                else:
+                    merged_bytes.extend(curr_node)
+                    curr = -1
+
+    return merged_bytes, offsets
+
+
+def optpixels_scs(fin, fin2):
+    """
+    SCS-optimized optpixels that restructures the pixel binary using graph-based
+    suffix-to-prefix merging while updating column offsets.
+    """
+    size = os.path.getsize(fin2)
+    width, height, offs, columnofs, columns = readpatch(fin)
+
+    runs_in_use = []
+    col_run_map = []  # Maps each non-255 column post index to its pixel tuple
+
+    with open(fin2, "rb") as f2:
+        pixels = mmap.mmap(f2.fileno(), 0, access=mmap.ACCESS_COPY)
+
+        j = 0
+        while j < len(columns):
+            topdelta, length, dataofs = columns[j]
+            if topdelta != 255:
+                run = tuple(pixels[dataofs:dataofs + length])
+                runs_in_use.append(run)
+                col_run_map.append((j, topdelta, length, run))
+            j += 1
+
+        pixels.close()
+
+    # Generate the merged pixel buffer using SCS overlap
+    newpixels, run_offsets = merge_pixel_runs_scs(runs_in_use)
+
+    # Update columns with their new offset in the merged pixel buffer
+    for col_idx, topdelta, length, run in col_run_map:
+        new_dataofs = run_offsets[run]
+        columns[col_idx] = (topdelta, length, new_dataofs)
+
+    # Rebuild patch headers and output files
+    rawcolumns = buildrawcolumns(width, columns)
+    newofs = 8 + width * 2
+    for i in range(width):
+        columnofs[i] = newofs
+        newofs = newofs + len(rawcolumns[i])
+
+    writepatch(fin, width, height, offs, columnofs, columns)
+    writepixels(fin2, newpixels)
+
+    saved = size - os.path.getsize(fin2)
+    if saved > 0:
+        print("%s\t%s" % (fin2, saved))
+    return saved
+
+def _process_single_patch_scs(item):
+    """
+    Helper worker function to process a single patch/pixel pair.
+    Returns (filename, saved_bytes).
+    """
+    fn, patch, pixels = item
+    print("SCS-optimizing pixels for %s" % fn)
+    saved = optpixels_scs(patch, pixels)
+    return fn, saved
+
+def optpixelsscs_all(max_workers=None):
+    """
+    Multi-threaded version of optpixelsscs_all.
+    max_workers defaults to CPU core count if set to None.
+    """
+    global s_endname
+    global s_startname
+
+    _, s_start = findcontent(content, s_startname)
+    _, s_end = findcontent(content, s_endname)
+
+    # Collect all tasks (file pairs) first
+    tasks = []
+    i = s_start
+    if "filename" not in content[i]:
+        i = i + 1
+    while i < s_end:
+        fn = content[i]["filename"]
+        patch = diskfn(fn)
+        pixels = diskfn(content[i+1]["filename"])
+        tasks.append((fn, patch, pixels))
+        i = i + 2
+
+    totalpix = 0
+
+    # Process patch files in parallel using a ThreadPoolExecutor
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(_process_single_patch_scs, task) for task in tasks]
+        
+        for future in concurrent.futures.as_completed(futures):
+            try:
+                fn, saved = future.result()
+                totalpix += saved
+            except Exception as exc:
+                print("Error processing patch: %s" % exc)
+
+    print("total saved\t%s" % totalpix)
+
 class CommandPatchOpt(BaseCommand):
     def __init__(self, cmd, args):
         global dirname
@@ -710,12 +940,13 @@ class CommandCrunch(CommandPatchOpt):
     def __init__(self, cmd, args):
         CommandPatchOpt.__init__(self, cmd, args)
 
+        threads = getattr(args, "threads", None)
         print("Crunching patches...")
 
         uniqs = {}
         minthreshold = 8000
         while True:
-            uniqs, cnt = crunchpatches(uniqs, minthreshold=minthreshold)
+            uniqs, cnt = crunchpatches(uniqs, minthreshold=minthreshold, max_workers=threads)
             if minthreshold == 16:
                 break
             if cnt != 0:
@@ -732,6 +963,15 @@ class CommandSquish(CommandPatchOpt):
 
         squishpatches()
 
+class CommandOptPixelsSCS(CommandPatchOpt):
+    def __init__(self, cmd, args):
+        CommandPatchOpt.__init__(self, cmd, args)
+
+        threads = getattr(args, "threads", None)
+        print("Optimizing pixel buffers via SCS (Threads: %s)..." % (threads or "Auto"))
+
+        optpixelsscs_all(max_workers=threads)
+    
 mc = MultiCommand()
 
 def genparser(parser):
@@ -744,6 +984,7 @@ def genparser(parser):
     parser.add_argument("--s_start", default = "S_START", type = str, help = "S_START lump name.")
     parser.add_argument("--s_end", default = "S_END", type = str, help = "S_END lump name.")
     parser.add_argument("--dir", metavar = "directory", type = str, help = "Input directory that should be compiled to a WAD.")
+    parser.add_argument("--threads", default=None, type=int, help="Number of parallel threads to use (default: CPU count).")
 mc.register("crunch", "Crunch patches, removing redundant data across multiple files", genparser, action = CommandCrunch)
 
 def genparser(parser):
@@ -751,5 +992,12 @@ def genparser(parser):
     parser.add_argument("--s_end", default = "S_END", type = str, help = "S_END lump name.")
     parser.add_argument("--dir", metavar = "directory", type = str, help = "Input directory that should be compiled to a WAD.")
 mc.register("squish", "Crunch patches, removing redundant data across multiple files", genparser, action = CommandSquish)
+
+def genparser(parser):
+    parser.add_argument("--s_start", default="S_START", type=str, help="S_START lump name.")
+    parser.add_argument("--s_end", default="S_END", type=str, help="S_END lump name.")
+    parser.add_argument("--dir", metavar="directory", type=str, help="Input directory that should be compiled to a WAD.")
+    parser.add_argument("--threads", default=None, type=int, help="Number of parallel threads to use (default: CPU count).")
+mc.register("optpixels-scs", "Optimize pixel buffers using Shortest Common Superstring overlap", genparser, action=CommandOptPixelsSCS)
 
 mc.run(sys.argv[1:])
