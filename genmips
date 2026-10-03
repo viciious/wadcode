@@ -26,6 +26,7 @@ from PIL import Image
 
 MIPLEVELS = 1
 
+pal = None
 writeheader = False
 dirname = sys.argv[1]
 if len(sys.argv) > 2:
@@ -192,6 +193,7 @@ def check_header(data, header, width, height):
     return (data, None)
 
 def convto4bpp(data, width, height, d8to24, d15to8):
+    global pal
     global colormap
 
     i, j = 0, 0
@@ -358,6 +360,8 @@ with open(tex1name, "rb") as fin:
                 if fe is None:
                     continue
                 if "filename" not in fe:
+                    continue
+                if "compressed" in fe:
                     continue
                 fn = os.path.join(filesdir, fe["filename"])
               

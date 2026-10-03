@@ -438,7 +438,7 @@ class WADFile():
 		lumps_sha1 = {}
 
 		def add_resource_lump(num, resource, data_offset):
-			if resource.remap_to != None:
+			if resource.remap_to != None and resource.remap_to.sha1 in lumps_sha1:
 				print("remapping %s to %s" % (resource.filename, resource.remap_to.filename))
 
 				lump2 = lumps_sha1[resource.remap_to.sha1]
