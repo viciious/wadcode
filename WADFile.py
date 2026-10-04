@@ -28,6 +28,7 @@ import sys
 import mmap
 import math
 import hashlib
+import struct
 from NamedStruct import NamedStruct
 
 class Filenames():
@@ -58,6 +59,7 @@ class WADFile():
 			self.remap_size = kwargs.pop("remap_size", 0)
 			self.filename = kwargs.pop("filename", "")
 			self.padding = kwargs.pop("padding", 4)
+			self.pixel_data = kwargs.pop("pixel_data", b"")
 
 		def padded_size(self):
 			size = 0
@@ -79,6 +81,8 @@ class WADFile():
 	_maplumps = ["things", "linedefs", "sidedefs", "vertexes", "segs", "ssectors", "nodes", "sectors", "reject", "blockmap"]
 
 	def __init__(self, struct_extra = "<"):
+		self._struct_extra = struct_extra
+		self._poffsets = False
 		self._WAD_HEADER = NamedStruct((
 			("4s", "magic"),
 			("l", "number_of_files"),
@@ -122,7 +126,7 @@ class WADFile():
 						resource2.remap_to = resource
 						resource2.remap_len = len(resource2.data)
 						resource2.remap_size = resource2.remap_len
-						resource2.remap_offset = resource.data.find(resource2.data)
+						resource2.remap_offset = resource.data.find(resource.data)
 						resource2.data = b""
 						print("found %s in %s" % (resource2.filename, resource.filename))
 						break
@@ -186,8 +190,11 @@ class WADFile():
 		return out
 
 	@classmethod
-	def create_from_file(cls, filename, endian, wadtype, decompress_sprites = False, decompress_other = False):
+	def create_from_file(cls, filename, endian, wadtype, decompress_sprites = False, decompress_other = False, poffsets = False):
 		wadfile = cls(endian)
+		wadfile._poffsets = poffsets
+		fmt_int = endian + "i"
+		fmt_ushort = endian + "H"
 		with open(filename, "rb") as f:
 			mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_COPY)
 
@@ -195,6 +202,9 @@ class WADFile():
 			assert(header.magic == wadtype)
 
 			is_sprite = False
+			s_start_rel_index = 0
+			poffset_values = []
+			patch_count = 0
 
 			offset = header.directory_offset
 			for fileno in range(header.number_of_files):
@@ -212,12 +222,26 @@ class WADFile():
 				if compressed:
 					name = chr(ord(name[0]) & ~0x80) + name[1:]
 
+				data = mm[fileinfo.offset:]
+
+				if poffsets and name == "POFFSETS":
+					p_data = data[:size]
+					total_patches = size // 6
+					offsets_block = p_data[:total_patches * 4]
+					lengths_block = p_data[total_patches * 4:total_patches * 6]
+
+					offsets = [struct.unpack(fmt_int, offsets_block[i:i+4])[0] for i in range(0, total_patches * 4, 4)]
+					lengths = [struct.unpack(fmt_ushort, lengths_block[i:i+2])[0] for i in range(0, total_patches * 2, 2)]
+
+					poffset_values = list(zip(offsets, lengths))
+					continue
+
 				if name == "S_START":
 					is_sprite = True
+					s_start_rel_index = 0
 				elif name == "S_END":
 					is_sprite = False
 
-				data = mm[fileinfo.offset:]
 				if compressed:
 					if is_sprite:
 						decompress = decompress_sprites
@@ -237,15 +261,35 @@ class WADFile():
 				else:
 					data = data[:size]
 
-				resource = cls._WADResource(name = name, data = data, compressed = compressed, group = "")
-				wadfile.add_resource(resource)
+				if poffsets and is_sprite and name not in ("S_START", "S_END"):
+					if s_start_rel_index % 2 == 1:
+						s_start_rel_index += 1
+						continue
+
+					resource = cls._WADResource(name = name, data = data, compressed = compressed, group = "")
+					wadfile.add_resource(resource)
+
+					if patch_count < len(poffset_values):
+						pix_offset, pix_len = poffset_values[patch_count]
+						pix_data = mm[pix_offset:pix_offset + pix_len]
+						pix_resource = cls._WADResource(name = "", data = pix_data, compressed = False, group = "")
+						wadfile.add_resource(pix_resource)
+
+					patch_count += 1
+					s_start_rel_index += 1
+				else:
+					resource = cls._WADResource(name = name, data = data, compressed = compressed, group = "")
+					wadfile.add_resource(resource)
+					if is_sprite and name != "S_START":
+						s_start_rel_index += 1
 
 			mm.close()
 		return wadfile
 
 	@classmethod
-	def create_from_directory(cls, dirname, endian, tag = None):
+	def create_from_directory(cls, dirname, endian, tag = None, poffsets = False):
 		wadfile = cls(endian)
+		wadfile._poffsets = poffsets
 		content_json = dirname + "/content.json"
 		with open(content_json) as f:
 			content = json.load(f)
@@ -253,13 +297,26 @@ class WADFile():
 		curtag = None
 		is_sprite = False
 
-		for resource_info in content:
+		patch_count = 0
+		if poffsets:
+			in_sp = False
+			for item in content:
+				nm = item.get("name", "")
+				if nm == "S_START":
+					in_sp = True
+				elif nm == "S_END":
+					in_sp = False
+				elif in_sp and nm not in ("", "."):
+					patch_count += 1
+
+		i = 0
+		while i < len(content):
+			resource_info = content[i]
 			fn = ""
 			if resource_info.get("virtual") is True:
 				data = b""
 			else:
 				fn = resource_info["filename"]
-				sha1 = hashlib.sha1()
 				with open(dirname + "/files/" + fn, "rb") as f:
 					data = f.read()
 
@@ -284,10 +341,16 @@ class WADFile():
 			if curtag:
 				if curtag[0] == "!":
 					if tag and curtag[1:] == tag:
+						i += 1
 						continue
 				else:
 					if not tag or curtag != tag:
+						i += 1
 						continue
+
+			if poffsets and name == "S_START":
+				poffset_res = cls._WADResource(name = "POFFSETS", data = b"\x00" * (patch_count * 6), compressed = False, group = None, padding = 4)
+				wadfile.add_resource(poffset_res)
 
 			if name == "S_START":
 				is_sprite = True
@@ -299,8 +362,26 @@ class WADFile():
 				padding = 2
 
 			compressed = "compressed" in resource_info
-			resource = cls._WADResource(name = name, data = data, compressed = compressed, group = group, sha1 = sha1.hexdigest(), filename = fn, padding = padding)
-			wadfile.add_resource(resource)
+
+			if poffsets and is_sprite and name not in ("S_START", "S_END"):
+				pixel_data = b""
+				if i + 1 < len(content):
+					next_info = content[i + 1]
+					if next_info.get("name", "") in ("", "."):
+						with open(dirname + "/files/" + next_info["filename"], "rb") as pf:
+							pixel_data = pf.read()
+						i += 1
+
+				resource = cls._WADResource(name = name, data = data, compressed = compressed, group = group, sha1 = sha1.hexdigest(), filename = fn, padding = padding, pixel_data = pixel_data)
+				wadfile.add_resource(resource)
+			elif poffsets and is_sprite and name in ("", "."):
+				i += 1
+				continue
+			else:
+				resource = cls._WADResource(name = name, data = data, compressed = compressed, group = group, sha1 = sha1.hexdigest(), filename = fn, padding = padding)
+				wadfile.add_resource(resource)
+
+			i += 1
 
 		return wadfile
 
@@ -336,7 +417,7 @@ class WADFile():
 					in_textures = False
 				elif virt_name == "F_START":
 					in_flats = True
-					in_sounds = in_textures = in_sprites = False
+					in_sounds = in_textures = in_flats = False
 				elif virt_name == "F_END":
 					in_flats = False
 				elif virt_name == "S_START":
@@ -421,23 +502,36 @@ class WADFile():
 			_group_cache[group] = size
 			return size
 
-		# assign groups to sprites
-		s_start = [i for i, x in enumerate(self._resources) if x.name == "S_START"][0]
-		s_end = [i for i, x in enumerate(self._resources) if x.name == "S_END"][0]
+		# Assign groups to sprites
+		s_start_idx = [i for i, x in enumerate(self._resources) if x.name == "S_START"]
+		if s_start_idx:
+			s_start = s_start_idx[0]
+			s_end = [i for i, x in enumerate(self._resources) if x.name == "S_END"][0]
 
-		i = 0
-		while i < s_end-1-(s_start+1):
-			res1 = self._resources[s_start+1+i]
-			if res1.group:
-				continue
-			res1.group = res1.name
-			self._resources[s_start+1+i+1].group = res1.name
-			i += 2
+			i = 0
+			step = 1 if self._poffsets else 2
+			while i < s_end - 1 - (s_start + 1):
+				res1 = self._resources[s_start + 1 + i]
+				if res1.group:
+					i += step
+					continue
+				res1.group = res1.name
+				if not self._poffsets:
+					self._resources[s_start + 1 + i + 1].group = res1.name
+				i += step
+
+		poffset_res = [r for r in self._resources if r.name == "POFFSETS"]
 
 		lumps = [None] * len(self._resources)
 		lumps_sha1 = {}
+		unique_pixel_offsets = {}
+		poffset_list = []
+		fmt_int = self._struct_extra + "i"
+		fmt_ushort = self._struct_extra + "H"
 
 		def add_resource_lump(num, resource, data_offset):
+			nonlocal poffset_list
+
 			if resource.remap_to != None and resource.remap_to.sha1 in lumps_sha1:
 				print("remapping %s to %s" % (resource.filename, resource.remap_to.filename))
 
@@ -459,6 +553,30 @@ class WADFile():
 			lumps[num] = lump
 
 			data_offset += len(lump.data) + lump.pad
+
+			# Append unique pixel data and record (offset, length) relative to WAD base (0)
+			if self._poffsets and hasattr(resource, "pixel_data") and resource.pixel_data:
+				pix_sha1 = hashlib.sha1(resource.pixel_data).hexdigest()
+				pix_len = len(resource.pixel_data)
+				if pix_sha1 in unique_pixel_offsets:
+					pix_abs_offset = unique_pixel_offsets[pix_sha1]
+					poffset_list.append((pix_abs_offset, pix_len))
+				else:
+					pix_abs_offset = data_offset
+					unique_pixel_offsets[pix_sha1] = pix_abs_offset
+
+					poffset_list.append((pix_abs_offset, pix_len))
+
+					lump.data += resource.pixel_data
+					data_offset += pix_len
+
+					# Align data_offset to resource padding boundary (2-byte for sprites)
+					pix_pad = 0
+					if data_offset & (resource.padding - 1):
+						pix_pad = resource.padding - (data_offset & (resource.padding - 1))
+						lump.data += b"\x00" * pix_pad
+						data_offset += pix_pad
+
 			return lump, data_offset
 
 		def map_resources(data_offset):
@@ -483,7 +601,6 @@ class WADFile():
 						print("Lump %s is too large: %s" % (resource.name, size))
 						sys.exit(1)
 
-					# do not allow lumps or groups to cross over into the next page block
 					if page >= 5:
 						if resource.remap_to is None:
 							end_page = math.floor((base_offset + data_offset + size) / 0x80000)
@@ -529,10 +646,16 @@ class WADFile():
 			last_lump.pad += pad
 			data_offset += pad
 
-		if not ssf:
-			return lumps
+		if self._poffsets and poffset_res:
+			p_idx = [i for i, x in enumerate(self._resources) if x.name == "POFFSETS"][0]
+			offsets_bytes = b"".join([struct.pack(fmt_int, off) for off, _ in poffset_list])
+			lengths_bytes = b"".join([struct.pack(fmt_ushort, length) for _, length in poffset_list])
+
+			poffset_bytes = offsets_bytes + lengths_bytes
+			lumps[p_idx].data = poffset_bytes
+			lumps[p_idx].size = len(poffset_bytes)
+
 		return lumps
-		#return sorted(lumps, key=lambda d: d.offset)
 
 	def write(self, wad_filename, wadtype, ssf, base_offset):
 		with open(wad_filename, "wb") as f:
