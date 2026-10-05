@@ -384,12 +384,8 @@ def mergepatches(pixfn, uniqcols, fin, fin2):
 
     return (uniqcols, fullpix, partialpix)
 
-def comparepatches(cols, cols2):
-    pix = 0
-    for col in cols:
-        if col in cols2:
-            pix = pix + len(col)
-    return pix
+def hash_col(col_bytes):
+    return int.from_bytes(hashlib.sha1(col_bytes).digest()[:4], "big")
 
 def crunchpatches(uniqs = {}, minthreshold=0, maxthreshold=0, skipsize=False):
     global s_endname
@@ -428,8 +424,27 @@ def crunchpatches(uniqs = {}, minthreshold=0, maxthreshold=0, skipsize=False):
 
         if fn not in uniqs:
             cols = patchuniqs(patch, pixels)
-            uniqs[fn] = (False, cols, [])
+            # Store map of {32bit_hash: length} to save memory while preserving length info
+            hash_lens = {hash_col(k): len(k) for k in cols.keys()}
+            uniqs[fn] = (False, cols, [], frozenset(hash_lens.keys()), hash_lens)
 
+        i = i + 2
+
+    # --- Memory-Efficient Hash Inverted Index ---
+    # Maps 32-bit hash -> list of patch indices
+    col_to_patches = {}
+    i = s_start
+    if "filename" not in content[i]:
+        i = i + 1
+
+    while i < s_end:
+        fn = content[i]["filename"]
+        mapped, cols, pixfns, hash_fset, _ = uniqs[fn]
+        if not mapped:
+            for h in hash_fset:
+                if h not in col_to_patches:
+                    col_to_patches[h] = []
+                col_to_patches[h].append(i)
         i = i + 2
 
     i = s_start
@@ -441,7 +456,7 @@ def crunchpatches(uniqs = {}, minthreshold=0, maxthreshold=0, skipsize=False):
         pixfn = diskfn(content[i+1]["filename"])
         pixfnsize = os.path.getsize(pixfn)
 
-        mapped, cols, pixfns = uniqs[fn]
+        mapped, cols, pixfns, hash_fset, hash_lens = uniqs[fn]
 
         if mapped:
             i = i + 2
@@ -451,30 +466,32 @@ def crunchpatches(uniqs = {}, minthreshold=0, maxthreshold=0, skipsize=False):
         bestmatch = -1
         bestcols = None
 
-        j = i + 2
-        while j < s_end:
+        # Gather candidate patch indices using 32-bit integer keys
+        candidates = set()
+        for h in hash_fset:
+            if h in col_to_patches:
+                for cand_idx in col_to_patches[h]:
+                    if cand_idx > i:
+                        candidates.add(cand_idx)
+
+        for j in candidates:
             fn2 = content[j]["filename"]
             pixfnsize2 = os.path.getsize(diskfn(content[j+1]["filename"]))
 
             if pixfnsize + pixfnsize2 > 62 * 1024:
-                j = j + 2
                 continue
 
             if fn2 == fn:
-                j = j + 2
                 continue
 
-            mapped2, cols2, pixfns2 = uniqs[fn2]
+            mapped2, cols2, pixfns2, hash_fset2, _ = uniqs[fn2]
 
-            if mapped2:
-                j = j + 2
+            if mapped2 or len(pixfns2) > 0:
                 continue
 
-            if len(pixfns2) > 0:
-                j = j + 2
-                continue
-
-            pix = comparepatches(cols, cols2)
+            # Intersect 32-bit hashes & sum exact length from hash_lens dict
+            shared_hashes = hash_fset & hash_fset2
+            pix = sum(hash_lens[h] for h in shared_hashes)
 
             if pix > bestpix:
                 patch = diskfn(content[j]["filename"])
@@ -484,8 +501,6 @@ def crunchpatches(uniqs = {}, minthreshold=0, maxthreshold=0, skipsize=False):
                     bestpix = pix
                     bestmatch = j
                     bestcols = cols2
-
-            j = j + 2
 
         if bestpix >= minthreshold and (maxthreshold == 0 or bestpix < maxthreshold):
             totalcnt = totalcnt + 1
@@ -500,8 +515,19 @@ def crunchpatches(uniqs = {}, minthreshold=0, maxthreshold=0, skipsize=False):
             pixfns.append(pixfn2)
             pixfns = pixfns + uniqs[fn2][2]
 
-            uniqs[fn2] = (True, bestcols, [])
-            uniqs[fn] = (False, cols, pixfns)
+            # Rebuild hash structures after merge
+            hash_lens = {hash_col(k): len(k) for k in cols.keys()}
+            hash_fset = frozenset(hash_lens.keys())
+
+            uniqs[fn2] = (True, bestcols, [], frozenset(), {})
+            uniqs[fn] = (False, cols, pixfns, hash_fset, hash_lens)
+
+            # Update index
+            for h in hash_fset:
+                if h not in col_to_patches:
+                    col_to_patches[h] = []
+                if i not in col_to_patches[h]:
+                    col_to_patches[h].append(i)
 
             with open(pixfn, "rb") as fin_file:
                 pixels_data = fin_file.read()
