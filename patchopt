@@ -20,7 +20,6 @@ import os
 import mmap
 import json
 import hashlib
-import concurrent.futures
 
 from MultiCommand import MultiCommand
 from BaseCommand import BaseCommand
@@ -145,7 +144,7 @@ def buildrawcolumns(width, columns):
                 raw.append(topdelta)
                 raw.append(length)
                 raw.extend(offset)
-        rawcolumns.append(raw)
+        rawcolumns.append(bytes(raw))
     return rawcolumns
 
 def writerawpatchfile(f, width, height, offs, columnofs, rawcolumns):
@@ -176,12 +175,11 @@ def allsubcols(uniqcols):
     
     for pixels in uniqcols:
         col = uniqcols[pixels]
-        pixels = list(pixels)
         collen = len(pixels)
         if collen == 1:
             continue
         for i in range(collen-1):
-            subpixels = tuple(pixels[i+1:])
+            subpixels = pixels[i+1:]
             if subpixels not in res:
                 res[subpixels] = (col[0], collen-i-1, col[2]+i+1)
 
@@ -194,7 +192,7 @@ def optpatch(fin, fin2):
     uniqcols = {}
     with open(fin2, "rb") as f2:
         pixels = mmap.mmap(f2.fileno(), 0, access=mmap.ACCESS_COPY)
-        
+
         j = 0
         for i in range(width):
             while j < len(columns):
@@ -203,20 +201,17 @@ def optpatch(fin, fin2):
                     j = j + 1
                     break
 
-                data = tuple(pixels[dataofs:dataofs+length])
+                data = pixels[dataofs:dataofs+length]
 
                 x = uniqcols.get(data)
                 if x:
                     if x[2] != dataofs:
-                        #if length >= 1:
-                        #    saved = saved + length
-                        #print("duplicate %s %s %d -> %d" % (topdelta, length, dataofs, x[2]))
                         columns[j] = (columns[j][0], columns[j][1], x[2])
                 else:
                     uniqcols[data] = (topdelta, length, dataofs)
                     if length > 1:
                         for i in range(length-1):
-                            subpixels = tuple(pixels[dataofs+i+1:dataofs+length])
+                            subpixels = pixels[dataofs+i+1:dataofs+length]
                             if subpixels not in uniqcols:
                                 uniqcols[subpixels] = (topdelta, length-i-1, dataofs+i+1)
                 j = j + 1
@@ -258,7 +253,6 @@ def optpixels(fin, fin2):
         offsets = [(k,v) for k,v in offsets.items()]
         used = sorted(offsets, key=lambda x: x[0])
 
-        #print(used)
         i = 0
         while i < len(used)-1:
             pos, length = used[i]
@@ -282,7 +276,6 @@ def optpixels(fin, fin2):
                 while j < len(columns):
                     topdelta, length, dataofs = columns[j]
                     if topdelta != 255 and dataofs >= o:
-                        #print("%s -> %s" % (dataofs, dataofs - (o - offset)))
                         columns[j] = (topdelta, length, dataofs - (o - offset))
                     j = j + 1
                 j = k
@@ -293,8 +286,6 @@ def optpixels(fin, fin2):
             newpixels = newpixels + pixels[oo:oo+ol]
             offset = offset + l
             k = k + 1
-
-        saved = 0
 
         pixels.close()
          
@@ -322,10 +313,9 @@ def findcontent(content, name):
     return (None, -1)
 
 def patchuniqs(fin, fin2):
-    origsize = os.path.getsize(fin)
-    width, _, _, _, columns = readpatch(fin)
-
+    width, height, offs, columnofs, columns = readpatch(fin)
     uniqcols = {}
+
     with open(fin2, "rb") as f2:
         pixels = mmap.mmap(f2.fileno(), 0, access=mmap.ACCESS_COPY)
 
@@ -338,9 +328,8 @@ def patchuniqs(fin, fin2):
                 if topdelta == 255:
                     break
 
-                data = tuple(pixels[dataofs:dataofs+length])
-                x = uniqcols.get(data)
-                if not x:
+                data = pixels[dataofs:dataofs+length]
+                if data not in uniqcols:
                     uniqcols[data] = (topdelta, length, dataofs)
 
         pixels.close()
@@ -350,11 +339,9 @@ def patchuniqs(fin, fin2):
 def mergepatches(pixfn, uniqcols, fin, fin2):
     fullpix, partialpix = 0, 0
     origsize = os.path.getsize(pixfn)
-    #print("%s %s" % (pixfn, origsize))
     width, height, offs, columnofs, columns = readpatch(fin)
 
     subcols = allsubcols(uniqcols)
-    #subcols = uniqcols
     with open(pixfn, "ab") as f3:
         with open(fin2, "rb") as f2:
             pixels = mmap.mmap(f2.fileno(), 0, access=mmap.ACCESS_COPY)
@@ -369,12 +356,11 @@ def mergepatches(pixfn, uniqcols, fin, fin2):
                         j = j + 1
                         break
 
-                    data = tuple(pixels[dataofs:dataofs+length])
+                    data = pixels[dataofs:dataofs+length]
                     x = subcols.get(data)
                     if not x:
                         uniqcols[data] = (topdelta, length, origsize)
                         subcols[data] = (topdelta, length, origsize)
-                        data = bytearray(data)
                         f3.write(data)
                         columns[j] = (topdelta, length, origsize)
                         origsize += len(data)
@@ -400,12 +386,12 @@ def mergepatches(pixfn, uniqcols, fin, fin2):
 
 def comparepatches(cols, cols2):
     pix = 0
-    for col in cols2:
-        if col in cols:
-            pix += len(col)
+    for col in cols:
+        if col in cols2:
+            pix = pix + len(col)
     return pix
 
-def crunchpatches(uniqs = {}, minthreshold=0, maxthreshold=0, skipsize=False, max_workers=None):
+def crunchpatches(uniqs = {}, minthreshold=0, maxthreshold=0, skipsize=False):
     global s_endname
     global s_startname
 
@@ -418,40 +404,33 @@ def crunchpatches(uniqs = {}, minthreshold=0, maxthreshold=0, skipsize=False, ma
     sha1uniqs = {}
     sha1s = [''] * len(content)
 
-    # --- Multi-threaded SHA1 Hash Pre-pass ---
-    hash_tasks = []
     i = s_start
     if "filename" not in content[i]:
         i = i + 1
+
     while i < s_end:
         fn = content[i]["filename"]
         patch = diskfn(fn)
         pixels = diskfn(content[i+1]["filename"])
-        hash_tasks.append((i, fn, patch, pixels))
-        i = i + 2
 
-    def _hash_worker(item):
-        idx, fn, patch, pixels = item
-        results = []
-        for j, tfn in enumerate([patch, pixels]):
-            sha1 = hashlib.sha1()
+        j = 0
+        for tfn in [patch, pixels]:
             with open(tfn, "rb") as f:
-                sha1.update(f.read())
-            results.append((idx + j, sha1.hexdigest()))
-        
-        # Calculate patchuniqs on the worker thread as well
-        cols = patchuniqs(patch, pixels)
-        return fn, patch, pixels, results, cols
+                sha1 = hashlib.sha1(f.read()).hexdigest()
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-        for fn, patch, pixels, hash_results, cols in executor.map(_hash_worker, hash_tasks):
-            for idx, digest in hash_results:
-                sha1uniqs[digest] = sha1uniqs.get(digest, 0) + 1
-                sha1s[idx] = digest
+            if sha1 not in sha1uniqs:
+                sha1uniqs[sha1] = 1
+            else:
+                sha1uniqs[sha1] += 1
 
-            if fn not in uniqs:
-                uniqs[fn] = (False, cols, [])
-    # --- End SHA1 Multi-threaded Pre-pass ---
+            sha1s[i+j] = sha1
+            j = j + 1
+
+        if fn not in uniqs:
+            cols = patchuniqs(patch, pixels)
+            uniqs[fn] = (False, cols, [])
+
+        i = i + 2
 
     i = s_start
     if "filename" not in content[i]:
@@ -463,6 +442,7 @@ def crunchpatches(uniqs = {}, minthreshold=0, maxthreshold=0, skipsize=False, ma
         pixfnsize = os.path.getsize(pixfn)
 
         mapped, cols, pixfns = uniqs[fn]
+
         if mapped:
             i = i + 2
             continue
@@ -471,15 +451,11 @@ def crunchpatches(uniqs = {}, minthreshold=0, maxthreshold=0, skipsize=False, ma
         bestmatch = -1
         bestcols = None
 
-        # --- Multi-threaded Inner Candidate Evaluation ---
-        candidates = []
         j = i + 2
         while j < s_end:
             fn2 = content[j]["filename"]
-            pixfn2 = diskfn(content[j+1]["filename"])
-            pixfnsize2 = os.path.getsize(pixfn2)
+            pixfnsize2 = os.path.getsize(diskfn(content[j+1]["filename"]))
 
-            # guard against ridiculously big lumps
             if pixfnsize + pixfnsize2 > 62 * 1024:
                 j = j + 2
                 continue
@@ -487,31 +463,29 @@ def crunchpatches(uniqs = {}, minthreshold=0, maxthreshold=0, skipsize=False, ma
             if fn2 == fn:
                 j = j + 2
                 continue
-            mapped, cols2, pixfns2 = uniqs[fn2]
-            if mapped or len(pixfns2) > 0:
+
+            mapped2, cols2, pixfns2 = uniqs[fn2]
+
+            if mapped2:
                 j = j + 2
                 continue
 
-            # Store payload for thread worker
-            candidates.append((j, fn2, cols2))
+            if len(pixfns2) > 0:
+                j = j + 2
+                continue
+
+            pix = comparepatches(cols, cols2)
+
+            if pix > bestpix:
+                patch = diskfn(content[j]["filename"])
+                patch_size2 = os.path.getsize(patch)
+
+                if skipsize or sha1uniqs[sha1s[j]] == 1 or pix > patch_size2:
+                    bestpix = pix
+                    bestmatch = j
+                    bestcols = cols2
+
             j = j + 2
-
-        if candidates:
-            def _eval_candidate(item):
-                cand_j, cand_fn2, cand_cols2 = item
-                pix_val = comparepatches(cols, cand_cols2)
-                return cand_j, cand_fn2, cand_cols2, pix_val
-
-            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-                results = executor.map(_eval_candidate, candidates)
-                
-                for cand_j, cand_fn2, cand_cols2, pix in results:
-                    if pix > bestpix:
-                        if skipsize or sha1uniqs[sha1s[cand_j]] == 1 or pix > os.path.getsize(diskfn(cand_fn2)):
-                            bestpix = pix
-                            bestmatch = cand_j
-                            bestcols = cand_cols2
-        # --- End Inner Loop ---
 
         if bestpix >= minthreshold and (maxthreshold == 0 or bestpix < maxthreshold):
             totalcnt = totalcnt + 1
@@ -529,16 +503,16 @@ def crunchpatches(uniqs = {}, minthreshold=0, maxthreshold=0, skipsize=False, ma
             uniqs[fn2] = (True, bestcols, [])
             uniqs[fn] = (False, cols, pixfns)
 
-            # copy pixels
-            with open(pixfn, "rb") as fin:
-                pixels = fin.read()
-                for pixfn2 in pixfns:
-                    with open(pixfn2, "wb") as fout:
-                        fout.write(pixels)
+            with open(pixfn, "rb") as fin_file:
+                pixels_data = fin_file.read()
+                for pixfn2_path in pixfns:
+                    with open(pixfn2_path, "wb") as fout_file:
+                        fout_file.write(pixels_data)
 
         i = i + 2
 
     print("total\t\t%s" % totalpix)
+
     return uniqs, totalcnt
 
 def optimizepatches():
@@ -581,33 +555,29 @@ def squishpatches(uniqs = {}):
     i = s_start
     if "filename" not in content[i]:
         i = i + 1
+
     while i < s_end:
         fn = content[i]["filename"]
         pixels = diskfn(content[i+1]["filename"])
 
-        for tfn in [pixels]:
-            sha1 = hashlib.sha1()
-            data = b""
-            with open(tfn, "rb") as f:
-                data = f.read()
-            sha1 = hashlib.sha1()
-            sha1.update(data)
-            sha1 = sha1.hexdigest()
+        with open(pixels, "rb") as f:
+            data = f.read()
 
-            name = content[i]["name"][:4]
-            if name not in nameuniqs:
-                nameuniqs[name] = sha1
+        sha1 = hashlib.sha1(data).hexdigest()
 
-            if sha1 not in sha1uniqs:
-                sha1uniqs[sha1] = [i]
-            else:
-                sha1uniqs[sha1].append(i)
-            sha1s[i] = sha1
+        name = content[i]["name"][:4]
+        if name not in nameuniqs:
+            nameuniqs[name] = sha1
+
+        if sha1 not in sha1uniqs:
+            sha1uniqs[sha1] = [i]
+        else:
+            sha1uniqs[sha1].append(i)
+        sha1s[i] = sha1
 
         i = i + 2
 
-    for k in sha1uniqs:
-        patches = sha1uniqs[k]
+    for k, patches in list(sha1uniqs.items()):
         if len(patches) >= 2:
             continue
 
@@ -616,12 +586,11 @@ def squishpatches(uniqs = {}):
         sha1 = nameuniqs[name]
         sha1uniqs[sha1].append(patch)
 
-    for k in sha1uniqs:
-        patches = sha1uniqs[k]
+    for k, patches in sha1uniqs.items():
         if len(patches) < 2:
             continue
 
-        batch = list()
+        batch = []
         coluniqs = {}
 
         n = len(patches) - 1
@@ -636,21 +605,20 @@ def squishpatches(uniqs = {}):
 
             for i in range(width):
                 raw = rawcolumns[i]
-                data = tuple(raw)
-                if data not in coluniqs:
+                if raw not in coluniqs:
                     uniqparts = []
 
                     m = collen(raw)
-                    while m < len(raw):
-                        data = tuple(raw[m:])
-                        if data not in coluniqs:
-                            uniqparts.append(data)
-                            coluniqs[data] = (n, patchlen+m, [])
+                    raw_len = len(raw)
+                    while m < raw_len:
+                        sub = raw[m:]
+                        if sub not in coluniqs:
+                            uniqparts.append(sub)
+                            coluniqs[sub] = (n, patchlen + m, [])
                         m = m + collen(raw[m:])
 
-                    data = tuple(raw)
-                    coluniqs[data] = (n, patchlen, uniqparts)
-                    patchlen = patchlen + len(raw)
+                    coluniqs[raw] = (n, patchlen, uniqparts)
+                    patchlen = patchlen + raw_len
                 ofs = ofs + len(raw)
 
             batch.append((width, height, offs, columnofs, rawcolumns, patch, ofs, patchlen, 0))
@@ -658,42 +626,41 @@ def squishpatches(uniqs = {}):
             n = n - 1
             totalsaved = totalsaved + (ofs - patchlen)
 
-        # reverse order
-        patches = []
+        patches_list = []
         bloblen = 0
-        for n in range(len(batch)):
+        while batch:
             patch = list(batch.pop())
             patch[8] = bloblen
             patchlen = patch[7]
             if patchlen & 1:
                 patchlen = patchlen + 1
             bloblen = bloblen + patchlen
-            patches.append(tuple(patch))
+            patches_list.append(tuple(patch))
 
-        # distances from each patch to other patches
-        dists = [0]*len(patches)
-        for n in range(len(patches)):
-            pos = patches[n][8]
-            dists[n] = [0]*len(patches)
-            for j in range(len(patches)):
-                dists[n][j] = patches[j][8] - pos
+        num_patches = len(patches_list)
+        dists = [[0] * num_patches for _ in range(num_patches)]
+        for n in range(num_patches):
+            pos = patches_list[n][8]
+            for j in range(num_patches):
+                dists[n][j] = patches_list[j][8] - pos
 
-        for n, patch in enumerate(patches):
-            fn = content[patch[5]]["filename"]
+        for n in range(num_patches):
+            patch_item = patches_list[n]
+            fn = content[patch_item[5]]["filename"]
             fin = diskfn(fn)
 
             with open(fin, "wb") as f:
                 m = n
-                while m < len(patches):
+                while m < num_patches:
                     written = {}
-                    patch = patches[m]
+                    patch = patches_list[m]
                     width, height, offs, columnofs, rawcolumns, _, _, patchlen, _ = patch
 
                     flen = f.tell()
 
                     for i in range(width):
-                        data = tuple(rawcolumns[i])
-                        u = coluniqs[data]
+                        raw_col = rawcolumns[i]
+                        u = coluniqs[raw_col]
                         colofs = dists[m][u[0]]
                         if colofs & 1:
                             colofs = colofs + 1
@@ -702,12 +669,12 @@ def squishpatches(uniqs = {}):
 
                     newrawcolumns = []
                     for i in range(width):
-                        data = tuple(rawcolumns[i])
-                        u = coluniqs[data]
+                        raw_col = rawcolumns[i]
+                        u = coluniqs[raw_col]
 
-                        if u[0] == m and data not in written:
-                            newrawcolumns.append(rawcolumns[i])
-                            written[data] = True
+                        if u[0] == m and raw_col not in written:
+                            newrawcolumns.append(raw_col)
+                            written[raw_col] = True
                             for part in u[2]:
                                 written[part] = True
 
@@ -719,7 +686,7 @@ def squishpatches(uniqs = {}):
                         print(flen, patchlen)
                         sys.exit(1)
                     if patchlen & 1:
-                        writeu8(f, 255)
+                        f.write(b'\xff')
                     m = m + 1
 
     print("total\t\t%s" % totalsaved)
@@ -752,13 +719,12 @@ class CommandCrunch(CommandPatchOpt):
     def __init__(self, cmd, args):
         CommandPatchOpt.__init__(self, cmd, args)
 
-        threads = getattr(args, "threads", None)
         print("Crunching patches...")
 
         uniqs = {}
         minthreshold = 8000
         while True:
-            uniqs, cnt = crunchpatches(uniqs, minthreshold=minthreshold, max_workers=threads)
+            uniqs, cnt = crunchpatches(uniqs, minthreshold=minthreshold)
             if minthreshold == 16:
                 break
             if cnt != 0:
@@ -787,7 +753,6 @@ def genparser(parser):
     parser.add_argument("--s_start", default = "S_START", type = str, help = "S_START lump name.")
     parser.add_argument("--s_end", default = "S_END", type = str, help = "S_END lump name.")
     parser.add_argument("--dir", metavar = "directory", type = str, help = "Input directory that should be compiled to a WAD.")
-    parser.add_argument("--threads", default=None, type=int, help="Number of parallel threads to use (default: CPU count).")
 mc.register("crunch", "Crunch patches, removing redundant data across multiple files", genparser, action = CommandCrunch)
 
 def genparser(parser):
