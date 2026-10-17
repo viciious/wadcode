@@ -13,14 +13,14 @@ enum {BOXTOP,BOXBOTTOM,BOXLEFT,BOXRIGHT};	/* bbox coordinates */
 
 typedef struct
 {
-	int16_t		x,y;
+	short		x,y;
 } mapvertex_t;
 
 typedef struct
 {
-	int16_t		x,y,dx,dy;			/* partition line */
-	int16_t		bbox[2][4];			/* bounding box for each child */
-	uint16_t	children[2];		/* if NF_SUBSECTOR its a subsector */
+	short		x,y,dx,dy;			/* partition line */
+	short		bbox[2][4];			/* bounding box for each child */
+	unsigned short	children[2];		/* if NF_SUBSECTOR its a subsector */
 } mapnode_t;
 
 typedef struct
