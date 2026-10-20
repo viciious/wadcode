@@ -36,11 +36,12 @@ class Filenames():
 		self._names = set()
 
 	def generate(self, template, extension = ""):
+		safetmpl = template.replace("\\", "^")
 		for i in range(1000):
 			if i == 0:
-				name = "%s%s" % (template, extension)
+				name = "%s%s" % (safetmpl, extension)
 			else:
-				name = "%s_%03d%s" % (template, i, extension)
+				name = "%s_%03d%s" % (safetmpl, i, extension)
 			if name not in self._names:
 				self._names.add(name)
 				return name
