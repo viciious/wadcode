@@ -18,6 +18,7 @@
 import sys
 import os
 import mmap
+import bisect
 import json
 import hashlib
 
@@ -147,7 +148,7 @@ def buildrawcolumns(width, columns):
         rawcolumns.append(bytes(raw))
     return rawcolumns
 
-def writerawpatchfile(f, width, height, offs, columnofs, rawcolumns):
+def writerawpatchfile(f, width, height, offs, columnofs, rawcolumns, trailer=b""):
     writebu16(f, width)
     #writebu16(f, height)
     writebu32(f, offs)
@@ -156,6 +157,7 @@ def writerawpatchfile(f, width, height, offs, columnofs, rawcolumns):
         writebu16(f, columnofs[i])
     for c in rawcolumns:
         f.write(c)
+    f.write(trailer)
 
 def writepatchfile(f, width, height, offs, columnofs, columns):
     writerawpatchfile(f, width, height, offs, columnofs, buildrawcolumns(width, columns))
@@ -565,11 +567,210 @@ def optimizepatches():
         i = i + 2
     print("total\t%s" % totalpix)
 
+COLUMN_INLINE = 0x8000
+
+def postsofcolumns(width, columns):
+    # Returns, for every column, the list of indices into 'columns' of its posts.
+    res = []
+    j = 0
+    for i in range(width):
+        posts = []
+        while j < len(columns):
+            col, j = columns[j], j + 1
+            if col[0] == 255:
+                break
+            posts.append(j - 1)
+        res.append(posts)
+    return res
+
+def patchsizes(pdata, rawcols):
+    # Size of every patch within the squished group (without inlining),
+    # accounting for columns shared with the patches that follow it.
+    seen = set()
+    sizes = [0] * len(pdata)
+    for n in range(len(pdata) - 1, -1, -1):
+        plen = 6 + pdata[n][0] * 2
+        for raw in rawcols[n]:
+            if raw in seen:
+                continue
+            m = collen(raw)
+            raw_len = len(raw)
+            while m < raw_len:
+                sub = raw[m:]
+                seen.add(sub)
+                m = m + collen(sub)
+            seen.add(raw)
+            plen = plen + raw_len
+        sizes[n] = plen
+    return sizes
+
+def inlinecolumns(patches, pdata, rawcols, sha1s):
+    # Finds single-post columns which are used exactly once within the group
+    # and whose pixels aren't shared with (or contained in) any other post.
+    # Such columns are removed from the pixel file (which is rewritten for all
+    # patches sharing it) and returned as inline data:
+    #   topdelta, 0x80 | (length - 1), pixels...
+    # Bit 7 of the length byte is always set for an inline post, and the low
+    # bits hold the pixel count minus one, exactly like a plain post header.
+    #
+    # Empty columns (a lone 0xff terminator) are always inlined. They are
+    # written as a single 0xff byte at the end of the patch, shared by every
+    # empty column of that patch, and the terminator no longer appears in the
+    # column data of the patch that owned it.
+    #
+    # Offsets of the remaining posts in pdata are remapped accordingly.
+    inlines = [{} for _ in patches]
+    removedtotal = 0
+
+    sizes = patchsizes(pdata, rawcols)
+
+    # Inline the empty columns first, so that the file size limits below see
+    # the final layout. All the empty columns of a patch share a single 0xff
+    # byte in its trailer. The last patch of the group owns the terminator
+    # stored in the column data, and that copy goes away.
+    owner = -1
+    for n in range(len(patches)):
+        width = pdata[n][0]
+        for i, js in enumerate(postsofcolumns(width, pdata[n][4])):
+            if not js:
+                inlines[n][i] = b'\xff'
+        if inlines[n]:
+            owner = n
+            sizes[n] = sizes[n] + 1
+    if owner >= 0:
+        sizes[owner] = sizes[owner] - 1
+
+    # Column offsets are 15 bit, so inlining must not make a file exceed 0x8000
+    # bytes. The file written for patch n holds patches n..last, so the files
+    # of the trailing patches are the smallest ones. Patches whose file is
+    # already too big are not inlined into at all.
+    firstok = len(sizes)
+    filesize = 0
+    for n in range(len(sizes) - 1, -1, -1):
+        filesize = filesize + sizes[n] + (sizes[n] & 1)
+        if filesize > 0x7000:
+            break
+        firstok = n
+        okfilesize = filesize
+
+    # Count usage of whole columns as well as their tail sub-columns
+    # (squishpatches shares those between patches).
+    rawcounts = {}
+    for raws in rawcols:
+        for raw in raws:
+            rawcounts[raw] = rawcounts.get(raw, 0) + 1
+
+            m = collen(raw)
+            raw_len = len(raw)
+            while m < raw_len:
+                sub = raw[m:]
+                rawcounts[sub] = rawcounts.get(sub, 0) + 1
+                m = m + collen(sub)
+
+    classes = {}
+    for n, patch in enumerate(patches):
+        classes.setdefault(sha1s[patch], []).append(n)
+
+    for members in classes.values():
+        pixfns = set()
+        for n in members:
+            pixfns.add(diskfn(content[patches[n]+1]["filename"]))
+
+        with open(diskfn(content[patches[members[0]]+1]["filename"]), "rb") as f:
+            pixels = f.read()
+
+        posts = []
+        singles = []
+        for n in members:
+            width, _, _, _, columns = pdata[n]
+            for i, js in enumerate(postsofcolumns(width, columns)):
+                for j in js:
+                    topdelta, length, dataofs = columns[j]
+                    posts.append((dataofs, dataofs + length, n, j))
+                if len(js) == 1 and rawcounts[rawcols[n][i]] == 1:
+                    singles.append((n, i, js[0]))
+
+        posts.sort()
+        exclusive = set()
+        maxend = 0
+        for k, (start, end, n, j) in enumerate(posts):
+            ok = maxend <= start
+            if ok and k + 1 < len(posts) and posts[k+1][0] < end:
+                ok = False
+            if end > maxend:
+                maxend = end
+            if ok:
+                exclusive.add((n, j))
+
+        removed = []
+        inlinedposts = set()
+        for n, i, j in singles:
+            if (n, j) not in exclusive:
+                continue
+            topdelta, length, dataofs = pdata[n][4][j]
+            if n < firstok:
+                continue
+            # a 4 byte column (single post, last-post flag instead of a
+            # terminator) is replaced by 2 + length bytes of inline data
+            # following the patch
+            newsize = sizes[n] + length - 2
+            delta = (newsize + (newsize & 1)) - (sizes[n] + (sizes[n] & 1))
+            if okfilesize + delta > 0x7000:
+                continue
+            okfilesize = okfilesize + delta
+            sizes[n] = newsize
+            # length is the pixel count, so the stored byte is count - 1 with
+            # bit 7 set, the same shape as a plain (non last) post header
+            inlines[n][i] = bytes([topdelta, 0x80 | (length - 1)]) + pixels[dataofs:dataofs+length]
+            inlinedposts.add((n, j))
+            removed.append((dataofs, length))
+
+        if not removed:
+            continue
+
+        removed.sort()
+        starts = [r[0] for r in removed]
+        cumul = [0]
+        for r in removed:
+            cumul.append(cumul[-1] + r[1])
+
+        for n in members:
+            columns = pdata[n][4]
+            for j in range(len(columns)):
+                topdelta, length, dataofs = columns[j]
+                if topdelta == 255 or (n, j) in inlinedposts:
+                    continue
+                columns[j] = (topdelta, length, dataofs - cumul[bisect.bisect_left(starts, dataofs)])
+
+        newpixels = bytearray()
+        pos = 0
+        for start, length in removed:
+            newpixels.extend(pixels[pos:start])
+            pos = start + length
+        newpixels.extend(pixels[pos:])
+
+        # A pixel file is never allowed to become empty: the engine always
+        # reads a pixels lump next to the patch (POFFSETS entry), and an empty
+        # lump would also make the WAD writer drop the entry. A single 0xff
+        # byte is never referenced by an inlined, single-post patch, so it is
+        # a safe filler.
+        if not newpixels:
+            newpixels.append(0xff)
+
+        for pixfn in pixfns:
+            writepixels(pixfn, bytes(newpixels))
+
+        removedtotal += cumul[-1]
+
+    return inlines, removedtotal
+
 def squishpatches(uniqs = {}):
     global s_endname
     global s_startname
 
     totalsaved = 0
+    totalinlined = 0
+    totalpixsaved = 0
 
     _, s_start = findcontent(content, s_startname)
     _, s_end = findcontent(content, s_endname)
@@ -616,21 +817,34 @@ def squishpatches(uniqs = {}):
         if len(patches) < 2:
             continue
 
+        # a patch can be listed twice (own group + name group)
+        patches = list(dict.fromkeys(patches))
+
         batch = []
         coluniqs = {}
+
+        pdata = [readpatch(diskfn(content[p]["filename"])) for p in patches]
+        origraws = [buildrawcolumns(d[0], d[4]) for d in pdata]
+        inlines, pixsaved = inlinecolumns(patches, pdata, origraws, sha1s)
+        totalpixsaved = totalpixsaved + pixsaved
 
         n = len(patches) - 1
         while n >= 0:
             patch = patches[n]
-            fn = content[patch]["filename"]
-            width, height, offs, columnofs, columns = readpatch(diskfn(fn))
+            width, height, offs, columnofs, columns = pdata[n]
             ofs = 6 + width * 2
             patchlen = ofs
 
             rawcolumns = buildrawcolumns(width, columns)
+            for i in inlines[n]:
+                rawcolumns[i] = None
 
             for i in range(width):
                 raw = rawcolumns[i]
+                if raw is None:
+                    # inlined column, replaces a 4 byte post
+                    ofs = ofs + 4
+                    continue
                 if raw not in coluniqs:
                     uniqparts = []
 
@@ -647,10 +861,26 @@ def squishpatches(uniqs = {}):
                     patchlen = patchlen + raw_len
                 ofs = ofs + len(raw)
 
-            batch.append((width, height, offs, columnofs, rawcolumns, patch, ofs, patchlen, 0))
+            totalsaved = totalsaved + (ofs - patchlen)
+
+            # inlined columns follow the patch itself; their offsets are
+            # relative to the start of the patch (computed when writing).
+            # Identical inline data (all the empty columns share a single
+            # 0xff) is stored once.
+            inlineofs = {}
+            trailer = bytearray()
+            seeninline = {}
+            for i in sorted(inlines[n]):
+                data = inlines[n][i]
+                if data not in seeninline:
+                    seeninline[data] = len(trailer)
+                    trailer.extend(data)
+                inlineofs[i] = seeninline[data]
+            totalinlined = totalinlined + len(inlines[n])
+
+            batch.append((width, height, offs, columnofs, rawcolumns, patch, ofs, patchlen + len(trailer), 0, inlineofs, bytes(trailer)))
 
             n = n - 1
-            totalsaved = totalsaved + (ofs - patchlen)
 
         patches_list = []
         bloblen = 0
@@ -680,12 +910,22 @@ def squishpatches(uniqs = {}):
                 while m < num_patches:
                     written = {}
                     patch = patches_list[m]
-                    width, height, offs, columnofs, rawcolumns, _, _, patchlen, _ = patch
+                    width, height, offs, columnofs, rawcolumns, _, _, patchlen, _, inlineofs, trailer = patch
 
                     flen = f.tell()
 
                     for i in range(width):
                         raw_col = rawcolumns[i]
+                        if raw_col is None:
+                            # relative to the start of this patch, like all other
+                            # column offsets: the trailer is the last part of it
+                            inlofs = patchlen - len(trailer) + inlineofs[i]
+                            if inlofs >= COLUMN_INLINE:
+                                print(fin)
+                                print("inline offset out of range", inlofs)
+                                sys.exit(1)
+                            columnofs[i] = inlofs | COLUMN_INLINE
+                            continue
                         u = coluniqs[raw_col]
                         colofs = dists[m][u[0]]
                         if colofs & 1:
@@ -696,6 +936,8 @@ def squishpatches(uniqs = {}):
                     newrawcolumns = []
                     for i in range(width):
                         raw_col = rawcolumns[i]
+                        if raw_col is None:
+                            continue
                         u = coluniqs[raw_col]
 
                         if u[0] == m and raw_col not in written:
@@ -704,7 +946,7 @@ def squishpatches(uniqs = {}):
                             for part in u[2]:
                                 written[part] = True
 
-                    writerawpatchfile(f, width, height, offs, columnofs, newrawcolumns)
+                    writerawpatchfile(f, width, height, offs, columnofs, newrawcolumns, trailer)
 
                     flen = f.tell() - flen
                     if flen != patchlen:
@@ -715,6 +957,7 @@ def squishpatches(uniqs = {}):
                         f.write(b'\xff')
                     m = m + 1
 
+    print("inlined\t\t%s columns, %s pixel bytes moved into patches" % (totalinlined, totalpixsaved))
     print("total\t\t%s" % totalsaved)
 
 class CommandPatchOpt(BaseCommand):
