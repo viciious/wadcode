@@ -127,7 +127,7 @@ class WADFile():
 						resource2.remap_to = resource
 						resource2.remap_len = len(resource2.data)
 						resource2.remap_size = resource2.remap_len
-						resource2.remap_offset = resource.data.find(resource.data)
+						resource2.remap_offset = resource.data.find(resource2.data)
 						resource2.data = b""
 						print("found %s in %s" % (resource2.filename, resource.filename))
 						break
@@ -490,19 +490,6 @@ class WADFile():
 	def genlumps(self, ssf, base_offset):
 		directory_offset = self._WAD_HEADER.size
 
-		_group_cache = {}
-		def group_size(group):
-			if group in _group_cache:
-				return _group_cache[group]
-
-			size = 0
-			for resource in self._resources:
-				if resource.group != group:
-					continue
-				size += resource.padded_size()
-			_group_cache[group] = size
-			return size
-
 		# Assign groups to sprites
 		s_start_idx = [i for i, x in enumerate(self._resources) if x.name == "S_START"]
 		if s_start_idx:
@@ -522,6 +509,9 @@ class WADFile():
 				i += step
 
 		poffset_res = [r for r in self._resources if r.name == "POFFSETS"]
+		if self._poffsets and poffset_res:
+			poffset_count = sum(1 for resource in self._resources if resource.pixel_data)
+			poffset_res[0].data = b"\x00" * (poffset_count * 6)
 
 		lumps = [None] * len(self._resources)
 		lumps_sha1 = {}
@@ -530,9 +520,33 @@ class WADFile():
 		fmt_int = self._struct_extra + "i"
 		fmt_ushort = self._struct_extra + "H"
 
+		def pixel_key(pix_sha1, page):
+			if page >= 6 and pix_sha1 not in unique_pixel_offsets:
+				return pix_sha1, page
+			return pix_sha1
+
+		def group_size(group, start_index, page):
+			size = 0
+			pixel_hashes = set(unique_pixel_offsets)
+			for resource in self._resources[start_index:]:
+				if resource.group != group:
+					continue
+				size += resource.padded_size()
+				if self._poffsets and resource.pixel_data:
+					pix_sha1 = hashlib.sha1(resource.pixel_data).hexdigest()
+					pix_key = pixel_key(pix_sha1, page)
+					if pix_key not in pixel_hashes:
+						pixel_hashes.add(pix_key)
+						pix_size = len(resource.pixel_data)
+						if pix_size & (resource.padding - 1):
+							pix_size += resource.padding - (pix_size & (resource.padding - 1))
+						size += pix_size
+			return size
+
 		def add_resource_lump(num, resource, data_offset):
 			nonlocal poffset_list
 
+			page = math.floor((base_offset + data_offset) / 0x80000)
 			if resource.remap_to != None and resource.remap_to.sha1 in lumps_sha1:
 				print("remapping %s to %s" % (resource.filename, resource.remap_to.filename))
 
@@ -558,15 +572,20 @@ class WADFile():
 			# Append unique pixel data and record (offset, length) relative to WAD base (0)
 			if self._poffsets and hasattr(resource, "pixel_data") and resource.pixel_data:
 				pix_sha1 = hashlib.sha1(resource.pixel_data).hexdigest()
+				pix_key = pixel_key(pix_sha1, page)
 				pix_len = len(resource.pixel_data)
-				if pix_sha1 in unique_pixel_offsets:
-					pix_abs_offset = unique_pixel_offsets[pix_sha1]
+				if pix_key in unique_pixel_offsets:
+					pix_abs_offset = unique_pixel_offsets[pix_key]
 					poffset_list.append((pix_abs_offset, pix_len))
 				else:
 					pix_abs_offset = data_offset
-					unique_pixel_offsets[pix_sha1] = pix_abs_offset
+					unique_pixel_offsets[pix_key] = pix_abs_offset
 
 					poffset_list.append((pix_abs_offset, pix_len))
+
+					if lump.pad:
+						lump.data += b"\x00" * lump.pad
+						lump.pad = 0
 
 					lump.data += resource.pixel_data
 					data_offset += pix_len
@@ -575,8 +594,8 @@ class WADFile():
 					pix_pad = 0
 					if data_offset & (resource.padding - 1):
 						pix_pad = resource.padding - (data_offset & (resource.padding - 1))
-						lump.data += b"\x00" * pix_pad
-						data_offset += pix_pad
+					lump.pad = pix_pad
+					data_offset += lump.pad
 
 			return lump, data_offset
 
@@ -596,18 +615,17 @@ class WADFile():
 				if ssf:
 					group = resource.group
 					if group:
-						size = group_size(resource.group)
+						size = group_size(resource.group, first_unmapped, page)
 
 					if size >= 0x80000:
 						print("Lump %s is too large: %s" % (resource.name, size))
 						sys.exit(1)
 
-					if page >= 5:
-						if resource.remap_to is None:
-							end_page = math.floor((base_offset + data_offset + size) / 0x80000)
-							if page != end_page:
-								print("Can't fit %s into the page" % (resource.name))
-								break
+					if page >= 5 and size > 0:
+						end_page = math.floor((base_offset + data_offset + size - 1) / 0x80000)
+						if page != end_page:
+							print("Can't fit %s into the page" % (resource.name))
+							break
 
 					if group:
 						for j, resource2 in enumerate(self._resources[first_unmapped:]):
