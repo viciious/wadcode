@@ -95,6 +95,10 @@
       background: #fff;
       box-shadow: 0 2px 6px #00000012;
     }
+    #isoTree.drop-target {
+      outline: 3px solid var(--explorer-accent);
+      outline-offset: -3px;
+    }
     .explorer-heading {
       display: flex;
       align-items: center;
@@ -301,7 +305,7 @@
           <input id="isoFile" type="file" accept=".iso,application/x-iso9660-image" required>
         </label>
       </form>
-      <p class="instructions">Select an ISO, browse to the destination folder, and use <strong>Add file</strong>. The selected local filename is used automatically; a same-named file in that folder is replaced. Your original files are not modified or uploaded.</p>
+      <p class="instructions">Select an ISO, browse to the destination folder, and use <strong>Add file</strong> or drop a local file onto the ISO panel. The selected local filename is used automatically; a same-named file in that folder is replaced. Your original files are not modified or uploaded.</p>
       <section id="actionPanel" aria-labelledby="actionHeading">
         <h2 id="actionHeading">Queued actions</h2>
         <ol id="actionLog"><li class="empty-log">No actions queued.</li></ol>
@@ -349,6 +353,7 @@
     const MAX_DIRECTORY_SIZE = 64 * 1024 * 1024;
     const isoInput = document.getElementById("isoFile");
     const payloadInput = document.getElementById("payloadFile");
+    const isoTree = document.getElementById("isoTree");
     const addFileButton = document.getElementById("addFile");
     const newDirectoryButton = document.getElementById("newDirectory");
     const downloadIsoButton = document.getElementById("downloadIso");
@@ -381,6 +386,41 @@
       if (loadedTreeFile && currentFolder) payloadInput.click();
     });
 
+    function isFileDrag(event) {
+      return Array.from(event.dataTransfer.types).includes("Files");
+    }
+
+    isoTree.addEventListener("dragenter", event => {
+      if (!isFileDrag(event)) return;
+      event.preventDefault();
+      isoTree.classList.add("drop-target");
+    });
+
+    isoTree.addEventListener("dragover", event => {
+      if (!isFileDrag(event)) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "copy";
+      isoTree.classList.add("drop-target");
+    });
+
+    isoTree.addEventListener("dragleave", event => {
+      if (!isoTree.contains(event.relatedTarget)) {
+        isoTree.classList.remove("drop-target");
+      }
+    });
+
+    isoTree.addEventListener("drop", event => {
+      if (!isFileDrag(event)) return;
+      event.preventDefault();
+      isoTree.classList.remove("drop-target");
+      const files = Array.from(event.dataTransfer.files);
+      if (files.length !== 1) {
+        showActionError(new Error("Drop one file at a time."));
+        return;
+      }
+      queuePayloadFile(files[0]);
+    });
+
     newDirectoryButton.addEventListener("click", () => {
       if (!loadedTreeFile || !currentFolder) return;
       const name = window.prompt("New folder name:");
@@ -398,10 +438,11 @@
       }
     });
 
-    payloadInput.addEventListener("change", async () => {
-      const payload = payloadInput.files[0];
-      payloadInput.value = "";
-      if (!payload || !loadedTreeFile || !currentFolder) return;
+    function queuePayloadFile(payload) {
+      if (!loadedTreeFile || !currentFolder) {
+        showActionError(new Error("Load an ISO and select a destination folder before adding a file."));
+        return;
+      }
       try {
         queueAction({
           type: "add-file",
@@ -413,6 +454,12 @@
       } catch (error) {
         showActionError(error);
       }
+    }
+
+    payloadInput.addEventListener("change", () => {
+      const payload = payloadInput.files[0];
+      payloadInput.value = "";
+      if (payload) queuePayloadFile(payload);
     });
 
     downloadIsoButton.addEventListener("click", async () => {
