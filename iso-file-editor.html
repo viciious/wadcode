@@ -1,0 +1,1562 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ISO File Editor</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      font: 16px/1.5 system-ui, sans-serif;
+      --surface: color-mix(in srgb, Canvas 94%, CanvasText);
+      --surface-raised: Canvas;
+      --border: color-mix(in srgb, CanvasText 18%, Canvas);
+      --muted: color-mix(in srgb, CanvasText 62%, Canvas);
+      --accent: #0878d1;
+      --selection: color-mix(in srgb, #0878d1 16%, Canvas);
+    }
+    body {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    h1 { line-height: 1.2; }
+    .instructions { font-size: .9rem; }
+    form {
+      display: grid;
+      gap: 1.25rem;
+      margin: 0 0 .75rem;
+    }
+    .app-shell {
+      display: grid;
+      grid-template-columns: minmax(230px, 26%) minmax(0, 1fr);
+      gap: 1.5rem;
+      max-width: 1800px;
+      min-height: 100vh;
+      margin-inline: auto;
+      padding: 1rem 1.25rem;
+    }
+    .info-pane { align-self: start; position: sticky; top: 1rem; }
+    .info-pane h1 { margin-top: 0; }
+    .info-pane form { margin-block: 1rem; }
+    .info-pane input[type="file"] {
+      box-sizing: border-box;
+      max-width: 100%;
+      padding: .35rem;
+      font-size: .9rem;
+    }
+    .editor-pane { min-width: 0; }
+    label { display: grid; gap: .4rem; font-weight: 600; }
+    input, select, button { font: inherit; padding: .55rem; }
+    button { cursor: pointer; }
+    button:disabled { cursor: wait; }
+    #status { min-height: 1.5em; overflow-wrap: anywhere; }
+    #status[data-error="true"] { color: #e66; }
+    #status[data-error="false"] { color: #3a6; }
+    #downloadCue { margin-block: .5rem 1rem; }
+    #actionPanel {
+      margin-block: 1rem 2rem;
+      padding: 1rem;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--surface-raised);
+    }
+    #actionPanel h2 { margin: 0 0 .5rem; font-size: 1.05rem; }
+    #actionLog { margin: 0; padding-inline-start: 1.5rem; }
+    #actionLog li { padding-block: .15rem; overflow-wrap: anywhere; }
+    #actionLog .empty-log { color: #777; list-style: none; margin-inline-start: -1.5rem; }
+    .download-actions { display: flex; flex-wrap: wrap; gap: .5rem; }
+    #downloadIso { margin-top: .75rem; }
+    #downloadCue { margin: .75rem 0 0; }
+    .notice {
+      padding: .8rem 1rem;
+      border-inline-start: 4px solid #b88b22;
+      background: color-mix(in srgb, CanvasText 7%, Canvas);
+    }
+    #isoTree {
+      --explorer-font-size: .8rem;
+      --explorer-text: #202020;
+      --explorer-muted: #666;
+      --explorer-border: #e1e1e1;
+      --explorer-panel: #f3f3f3;
+      --explorer-hover: #f2f8fd;
+      --explorer-selected: #e5f3ff;
+      --explorer-accent: #0078d4;
+      color-scheme: light;
+      color: var(--explorer-text);
+      font-size: var(--explorer-font-size);
+      display: flex;
+      height: max(500px, calc(100vh - 110px));
+      flex-direction: column;
+      margin: 0 0 1rem;
+      overflow: hidden;
+      border: 1px solid var(--explorer-border);
+      border-radius: 4px;
+      background: #fff;
+      box-shadow: 0 2px 6px #00000012;
+    }
+    .explorer-heading {
+      display: flex;
+      align-items: center;
+      gap: .55rem;
+      padding: .65rem .9rem;
+      border-bottom: 1px solid var(--explorer-border);
+      background: var(--explorer-panel);
+    }
+    .explorer-heading h2 { margin: 0; font-size: 1.1em; font-weight: 600; }
+    .drive-icon { font-size: 1.2em; }
+    .explorer-toolbar {
+      display: flex;
+      align-items: center;
+      gap: .6rem;
+      padding: .5rem .7rem;
+      border-bottom: 1px solid var(--explorer-border);
+      background: var(--explorer-panel);
+    }
+    .explorer-toolbar #treeStatus { flex: 0 1 auto; }
+    #breadcrumbs {
+      display: flex;
+      flex: 1;
+      min-width: 0;
+      align-items: center;
+      gap: .2rem;
+      overflow-x: auto;
+      padding: .22rem .35rem;
+      border: 1px solid #c8c8c8;
+      border-radius: 2px;
+      background: #fff;
+      white-space: nowrap;
+    }
+    #breadcrumbs button, .folder-name {
+      border: 0;
+      border-radius: 2px;
+      background: transparent;
+      color: inherit;
+    }
+    #breadcrumbs button { padding: .15rem .35rem; }
+    #breadcrumbs button:hover, .folder-name:hover { background: var(--explorer-hover); outline: 1px solid #cce4f7; }
+    #breadcrumbs button[aria-current="location"] { font-weight: 600; }
+    .crumb-separator { color: var(--explorer-muted); }
+    #treeStatus { margin: 0; color: var(--explorer-muted); font-size: .92em; }
+    #destinationStatus {
+      margin: 0;
+      padding: .45rem .8rem;
+      border-bottom: 1px solid var(--explorer-border);
+      background: #fff;
+      color: var(--explorer-muted);
+      font-size: .92em;
+      overflow-wrap: anywhere;
+    }
+    #addFile, #newDirectory {
+      flex: 0 0 auto;
+      padding: .38rem .75rem;
+      border: 1px solid #0874c9;
+      border-radius: 2px;
+      background: linear-gradient(#1685dc, #0878d1);
+      color: #fff;
+      font-size: .94em;
+    }
+    #addFile:hover:not(:disabled), #newDirectory:hover:not(:disabled) { background: #006cbe; }
+    #addFile:disabled, #newDirectory:disabled, #downloadIso:disabled {
+      border-color: #c8c8c8;
+      background: #eee;
+      color: #888;
+    }
+    .explorer-layout {
+      display: grid;
+      grid-template-columns: minmax(190px, 250px) minmax(0, 1fr);
+      grid-template-rows: minmax(0, 1fr);
+      flex: 1;
+      min-height: 0;
+      background: #fff;
+    }
+    #fileTree {
+      min-height: 0;
+      overflow-y: auto;
+      padding: .45rem .4rem;
+      border-inline-end: 1px solid var(--explorer-border);
+      background: #fafafa;
+    }
+    #fileTree, #fileTree ul, #fileList { list-style: none; margin: 0; }
+    #fileTree ul { padding-inline-start: 1rem; }
+    #fileTree li { min-width: 0; }
+    .tree-row {
+      display: flex;
+      min-width: 0;
+      align-items: center;
+      gap: .1rem;
+      border: 1px solid transparent;
+      border-radius: 2px;
+    }
+    .tree-row:hover { background: var(--explorer-hover); }
+    .tree-row[aria-current="true"] {
+      border-color: #cce4f7;
+      background: var(--explorer-selected);
+    }
+    .tree-toggle, .tree-spacer {
+      flex: 0 0 1.15rem;
+      width: 1.15rem;
+      padding: .05rem 0;
+      border: 0;
+      background: transparent;
+      color: var(--explorer-muted);
+      text-align: center;
+    }
+    .tree-toggle:hover { color: var(--explorer-accent); }
+    .folder-name {
+      min-width: 0;
+      overflow: hidden;
+      padding: .12rem .25rem;
+      text-align: start;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .tree-children[hidden] { display: none; }
+    .explorer-list { min-width: 0; min-height: 0; overflow-y: auto; background: #fff; }
+    .list-header, .file-row {
+      display: grid;
+      grid-template-columns: minmax(150px, 1fr) minmax(100px, 150px) 150px;
+      align-items: center;
+      gap: .75rem;
+      padding: .28rem .65rem;
+    }
+    .list-header {
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      border-bottom: 1px solid var(--explorer-border);
+      background: #f8f8f8;
+      color: var(--explorer-muted);
+      font-size: .88em;
+      font-weight: 600;
+    }
+    .file-row {
+      min-height: 1.8rem;
+      border-bottom: 1px solid #f0f0f0;
+    }
+    .file-row:hover { background: var(--explorer-hover); }
+    .file-name {
+      display: flex;
+      min-width: 0;
+      align-items: center;
+      gap: .55rem;
+    }
+    .file-name-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .file-icon { flex: 0 0 auto; font-size: 1.05em; }
+    .file-size { color: var(--explorer-muted); font-size: .9em; }
+    .file-action {
+      justify-self: end;
+      padding: .1rem .4rem;
+      border: 1px solid #c8c8c8;
+      border-radius: 2px;
+      background: linear-gradient(#fff, #f5f5f5);
+      color: var(--explorer-text);
+      font-size: .9em;
+    }
+    .row-actions { display: flex; justify-content: flex-end; gap: .35rem; }
+    .file-action:hover {
+      border-color: #8abfe8;
+      background: #f3f9fd;
+    }
+    .file-action.delete-action {
+      border-color: #d6a5a5;
+      color: #a12626;
+    }
+    .file-action.delete-action:hover { border-color: #c66; background: #fff5f5; }
+    .file-row[role="button"] { cursor: pointer; }
+    .file-row[role="button"]:focus-visible {
+      outline: 2px solid var(--explorer-accent);
+      outline-offset: -2px;
+    }
+    #emptyFolder { padding: 1.25rem; color: var(--explorer-muted); text-align: center; }
+    #explorerFooter {
+      padding: .4rem .75rem;
+      border-top: 1px solid var(--explorer-border);
+      background: var(--explorer-panel);
+      color: var(--explorer-muted);
+      font-size: .78rem;
+    }
+    @media (max-width: 1000px) {
+      .app-shell {
+        grid-template-columns: minmax(0, 1fr);
+        gap: .75rem;
+        padding: .75rem;
+      }
+      .info-pane { position: static; }
+      #isoTree { height: max(440px, 68vh); }
+      .explorer-layout { grid-template-columns: minmax(125px, 36%) minmax(0, 1fr); }
+      .list-header, .file-row { grid-template-columns: minmax(100px, 1fr) 130px; gap: .4rem; padding-inline: .55rem; }
+      .list-header span:nth-child(2), .file-size { display: none; }
+      .file-action { padding-inline: .4rem; }
+    }
+  </style>
+</head>
+<body>
+  <main class="app-shell">
+    <aside class="info-pane">
+      <h1>ISO File Editor</h1>
+      <form id="editor">
+        <label>
+          ISO Image
+          <input id="isoFile" type="file" accept=".iso,application/x-iso9660-image" required>
+        </label>
+      </form>
+      <p class="instructions">Select an ISO, browse to the destination folder, and use <strong>Add file</strong>. The selected local filename is used automatically; a same-named file in that folder is replaced. Your original files are not modified or uploaded.</p>
+      <section id="actionPanel" aria-labelledby="actionHeading">
+        <h2 id="actionHeading">Queued actions</h2>
+        <ol id="actionLog"><li class="empty-log">No actions queued.</li></ol>
+        <div class="download-actions">
+          <button id="downloadIso" type="button" disabled>Download ISO</button>
+          <button id="downloadCue" type="button" hidden>Download matching CUE file</button>
+        </div>
+      </section>
+      <p class="notice"><strong>Supported:</strong> single-session ISO9660 images with a primary volume descriptor and standard path tables. Joliet, UDF, multi-session, interleaved files, and multi-extent files are not supported; unsupported images are rejected.</p>
+    </aside>
+    <section class="editor-pane" aria-label="ISO editor">
+      <input id="payloadFile" type="file" hidden>
+      <section id="isoTree" aria-labelledby="treeHeading">
+        <div class="explorer-heading">
+          <span class="drive-icon" aria-hidden="true">💿</span>
+          <h2 id="treeHeading">ISO contents</h2>
+        </div>
+        <div class="explorer-toolbar">
+          <nav id="breadcrumbs" aria-label="Current folder"></nav>
+          <p id="treeStatus" role="status" aria-live="polite">Choose an ISO image to view its files.</p>
+          <button id="newDirectory" type="button" disabled hidden>New folder</button>
+          <button id="addFile" type="button" disabled hidden>Add file</button>
+        </div>
+        <p id="destinationStatus" role="status" aria-live="polite">Choose an ISO image to select a destination folder.</p>
+        <div class="explorer-layout">
+          <nav id="fileTree" aria-label="ISO folders"></nav>
+          <div class="explorer-list" aria-label="Folder contents">
+            <div class="list-header" aria-hidden="true">
+              <span>Name</span><span>Size</span><span></span>
+            </div>
+            <ul id="fileList"></ul>
+            <p id="emptyFolder" hidden>This folder is empty.</p>
+          </div>
+        </div>
+        <div id="explorerFooter">No ISO loaded</div>
+      </section>
+      <p id="status" role="status" aria-live="polite"></p>
+    </section>
+  </main>
+
+  <script>
+    "use strict";
+
+    const SECTOR_SIZE = 2048;
+    const MAX_DIRECTORY_SIZE = 64 * 1024 * 1024;
+    const isoInput = document.getElementById("isoFile");
+    const payloadInput = document.getElementById("payloadFile");
+    const addFileButton = document.getElementById("addFile");
+    const newDirectoryButton = document.getElementById("newDirectory");
+    const downloadIsoButton = document.getElementById("downloadIso");
+    const actionLog = document.getElementById("actionLog");
+    const status = document.getElementById("status");
+    const cueButton = document.getElementById("downloadCue");
+    const treeStatus = document.getElementById("treeStatus");
+    const destinationStatus = document.getElementById("destinationStatus");
+    const fileTree = document.getElementById("fileTree");
+    const fileList = document.getElementById("fileList");
+    const breadcrumbs = document.getElementById("breadcrumbs");
+    const emptyFolder = document.getElementById("emptyFolder");
+    const explorerFooter = document.getElementById("explorerFooter");
+    let loadedTreeFile = null;
+    let loadedTree = null;
+    let currentFolder = null;
+    let loadGeneration = 0;
+    let updatedIsoName = null;
+    let queuedActions = [];
+
+    cueButton.addEventListener("click", () => {
+      if (!updatedIsoName) return;
+      const cueName = updatedIsoName.replace(/\.iso$/i, ".cue");
+      const cueContents = `FILE "${updatedIsoName}" BINARY\n  TRACK 01 MODE1/2048\n    INDEX 01 00:00:00\n`;
+      const cueBlob = new Blob([cueContents], { type: "text/plain;charset=utf-8" });
+      downloadBlob(cueBlob, cueName);
+    });
+
+    addFileButton.addEventListener("click", () => {
+      if (loadedTreeFile && currentFolder) payloadInput.click();
+    });
+
+    newDirectoryButton.addEventListener("click", () => {
+      if (!loadedTreeFile || !currentFolder) return;
+      const name = window.prompt("New folder name:");
+      if (name === null || !name.trim()) return;
+      try {
+        queueAction({
+          type: "create-directory",
+          path: selectedFolderPath(currentFolder),
+          name: name.trim(),
+          identifier: isoDirectoryName(name),
+          display: `Create directory "${name.trim()}" in ${folderDisplayPath(currentFolder)}`
+        });
+      } catch (error) {
+        showActionError(error);
+      }
+    });
+
+    payloadInput.addEventListener("change", async () => {
+      const payload = payloadInput.files[0];
+      payloadInput.value = "";
+      if (!payload || !loadedTreeFile || !currentFolder) return;
+      try {
+        queueAction({
+          type: "add-file",
+          path: selectedFolderPath(currentFolder),
+          payload,
+          identifier: isoName(payload.name),
+          display: `Add or replace file "${payload.name}" in ${folderDisplayPath(currentFolder)}`
+        });
+      } catch (error) {
+        showActionError(error);
+      }
+    });
+
+    downloadIsoButton.addEventListener("click", async () => {
+      if (!loadedTreeFile || queuedActions.length === 0) return;
+      downloadIsoButton.disabled = true;
+      addFileButton.disabled = true;
+      newDirectoryButton.disabled = true;
+      status.textContent = "Applying queued actions and creating the ISO…";
+      status.removeAttribute("data-error");
+      try {
+        const output = await createIso(loadedTreeFile, queuedActions);
+        const baseName = loadedTreeFile.name.replace(/\.iso$/i, "");
+        updatedIsoName = `${baseName}-updated.iso`;
+        downloadBlob(output, updatedIsoName);
+        cueButton.hidden = false;
+        status.textContent = `Created ${updatedIsoName} (${(output.size / (1024 * 1024)).toFixed(1)} MiB).`;
+        status.dataset.error = "false";
+      } catch (error) {
+        status.textContent = error instanceof Error ? error.message : "Could not create the ISO.";
+        status.dataset.error = "true";
+      } finally {
+        downloadIsoButton.disabled = !loadedTreeFile || queuedActions.length === 0;
+        addFileButton.disabled = !loadedTreeFile;
+        newDirectoryButton.disabled = !loadedTreeFile;
+      }
+    });
+
+    isoInput.addEventListener("change", async () => {
+      const file = isoInput.files[0];
+      const generation = ++loadGeneration;
+      updatedIsoName = null;
+      cueButton.hidden = true;
+      queuedActions = [];
+      renderActionLog();
+      status.textContent = "";
+      downloadIsoButton.disabled = true;
+      loadedTreeFile = null;
+      loadedTree = null;
+      currentFolder = null;
+      addFileButton.disabled = true;
+      addFileButton.hidden = true;
+      newDirectoryButton.disabled = true;
+      newDirectoryButton.hidden = true;
+      destinationStatus.textContent = file
+        ? "Reading ISO directory tree…"
+        : "Choose an ISO image to select a destination folder.";
+      fileTree.replaceChildren();
+      fileList.replaceChildren();
+      breadcrumbs.replaceChildren();
+      if (!file) {
+        treeStatus.textContent = "Choose an ISO image to view its files.";
+        destinationStatus.textContent = "Choose an ISO image to select a destination folder.";
+        explorerFooter.textContent = "No ISO loaded";
+        return;
+      }
+      treeStatus.textContent = "Reading ISO directory tree…";
+      try {
+        const tree = await readIsoTree(file);
+        if (generation !== loadGeneration) return;
+        loadedTree = tree;
+        loadedTreeFile = file;
+        currentFolder = tree.root;
+        tree.root._expanded = true;
+        addFileButton.disabled = false;
+        addFileButton.hidden = false;
+        newDirectoryButton.disabled = false;
+        newDirectoryButton.hidden = false;
+        renderExplorer();
+        treeStatus.textContent = "";
+        updateDestinationStatus();
+        explorerFooter.textContent = `${tree.count} items · ${file.name}`;
+      } catch (error) {
+        if (generation !== loadGeneration) return;
+        treeStatus.textContent = error instanceof Error
+          ? error.message
+          : "Could not read the ISO directory tree.";
+        fileTree.replaceChildren();
+        fileList.replaceChildren();
+        destinationStatus.textContent = "Could not load an ISO destination folder.";
+        explorerFooter.textContent = "Could not load ISO";
+      }
+    });
+
+    function fail(message) {
+      throw new Error(message);
+    }
+
+    function readU16LE(bytes, offset) {
+      return bytes[offset] | (bytes[offset + 1] << 8);
+    }
+
+    function readU16BE(bytes, offset) {
+      return (bytes[offset] << 8) | bytes[offset + 1];
+    }
+
+    function readU32LE(bytes, offset) {
+      return (bytes[offset] | (bytes[offset + 1] << 8) |
+        (bytes[offset + 2] << 16) | (bytes[offset + 3] << 24)) >>> 0;
+    }
+
+    function readU32BE(bytes, offset) {
+      return ((bytes[offset] << 24) | (bytes[offset + 1] << 16) |
+        (bytes[offset + 2] << 8) | bytes[offset + 3]) >>> 0;
+    }
+
+    function writeU32LE(bytes, offset, value) {
+      bytes[offset] = value & 0xff;
+      bytes[offset + 1] = (value >>> 8) & 0xff;
+      bytes[offset + 2] = (value >>> 16) & 0xff;
+      bytes[offset + 3] = (value >>> 24) & 0xff;
+    }
+
+    function writeU32BE(bytes, offset, value) {
+      bytes[offset] = (value >>> 24) & 0xff;
+      bytes[offset + 1] = (value >>> 16) & 0xff;
+      bytes[offset + 2] = (value >>> 8) & 0xff;
+      bytes[offset + 3] = value & 0xff;
+    }
+
+    function readBothU32(bytes, offset, label) {
+      const little = readU32LE(bytes, offset);
+      const big = readU32BE(bytes, offset + 4);
+      if (little !== big) fail(`Invalid ISO: inconsistent ${label} values.`);
+      return little;
+    }
+
+    async function readRange(file, start, length) {
+      if (!Number.isSafeInteger(start) || !Number.isSafeInteger(length) ||
+          start < 0 || length < 0 || start + length > file.size) {
+        fail("Invalid ISO: a referenced region is outside the selected file.");
+      }
+      return new Uint8Array(await file.slice(start, start + length).arrayBuffer());
+    }
+
+    function decodeAscii(bytes, start, length) {
+      let result = "";
+      for (let i = 0; i < length; i++) result += String.fromCharCode(bytes[start + i]);
+      return result;
+    }
+
+    function isoDirectoryName(value) {
+      if (typeof value !== "string") fail("Enter a folder name.");
+      const normalized = value.trim().replace(/[^A-Za-z0-9_]/g, "_").toUpperCase();
+      if (!normalized || normalized.length > 31 || normalized === "." || normalized === "..") {
+        fail("Folder names must be 1–31 characters and use ISO9660-compatible letters, numbers, or underscores.");
+      }
+      return normalized;
+    }
+
+    function isoName(value) {
+      if (typeof value !== "string") fail("A valid filename is required.");
+      const filename = value.trim();
+      const extensionStart = filename.lastIndexOf(".");
+      const base = (extensionStart > 0 ? filename.slice(0, extensionStart) : filename)
+        .replace(/[^A-Za-z0-9_]/g, "_");
+      const extension = extensionStart > 0
+        ? `.${filename.slice(extensionStart + 1).replace(/[^A-Za-z0-9_]/g, "_")}`
+        : "";
+      const normalized = `${base}${extension}`.toUpperCase();
+      if (!filename || !normalized || normalized.length > 28) {
+        fail("The selected filename cannot be represented as an ISO9660 name of up to 28 characters.");
+      }
+      return `${normalized};1`;
+    }
+
+    function nameKey(identifier) {
+      return identifier.replace(/;\d+$/, "").toUpperCase();
+    }
+
+    function parseDirectory(bytes) {
+      const entries = [];
+      let offset = 0;
+      while (offset < bytes.length) {
+        const recordLength = bytes[offset];
+        if (recordLength === 0) {
+          offset = Math.ceil((offset + 1) / SECTOR_SIZE) * SECTOR_SIZE;
+          continue;
+        }
+        if (recordLength < 34 || offset + recordLength > bytes.length ||
+            (offset % SECTOR_SIZE) + recordLength > SECTOR_SIZE) {
+          fail("Invalid ISO: malformed root directory entry.");
+        }
+        const nameLength = bytes[offset + 32];
+        if (33 + nameLength > recordLength) fail("Invalid ISO: malformed filename entry.");
+        const idBytes = bytes.subarray(offset + 33, offset + 33 + nameLength);
+        const identifier = nameLength === 1 && (idBytes[0] === 0 || idBytes[0] === 1)
+          ? null
+          : decodeAscii(idBytes, 0, idBytes.length);
+        if (identifier !== null) {
+          entries.push({
+            offset,
+            recordLength,
+            recordBytes: bytes.slice(offset, offset + recordLength),
+            identifier,
+            flags: bytes[offset + 25],
+            extendedAttributeLength: bytes[offset + 1],
+            unitSize: bytes[offset + 26],
+            gapSize: bytes[offset + 27],
+            extent: readBothU32(bytes, offset + 2, "directory extent"),
+            size: readBothU32(bytes, offset + 10, "directory file size")
+          });
+        }
+        offset += recordLength;
+      }
+      return entries;
+    }
+
+    function findDirectorySpecialOffsets(bytes) {
+      let dotOffset = -1;
+      let parentOffset = -1;
+      for (let offset = 0; offset < bytes.length;) {
+        const recordLength = bytes[offset];
+        if (recordLength === 0) {
+          offset = Math.ceil((offset + 1) / SECTOR_SIZE) * SECTOR_SIZE;
+          continue;
+        }
+        if (recordLength < 34 || offset + recordLength > bytes.length ||
+            (offset % SECTOR_SIZE) + recordLength > SECTOR_SIZE) {
+          fail("Invalid ISO: malformed directory special entry.");
+        }
+        const nameLength = bytes[offset + 32];
+        if (nameLength === 1 && bytes[offset + 33] === 0) dotOffset = offset;
+        if (nameLength === 1 && bytes[offset + 33] === 1) parentOffset = offset;
+        offset += recordLength;
+      }
+      if (dotOffset < 0 || parentOffset < 0) {
+        fail("Invalid ISO: a directory is missing its current or parent entry.");
+      }
+      return { dotOffset, parentOffset };
+    }
+
+    function parsePathTable(bytes, offset, endian) {
+      const entries = [];
+      let cursor = 0;
+      while (cursor < bytes.length) {
+        const nameLength = bytes[cursor];
+        if (nameLength === 0 || cursor + 8 + nameLength + (nameLength % 2) > bytes.length) {
+          fail("Invalid ISO: malformed path table entry.");
+        }
+        const extent = endian === "le"
+          ? readU32LE(bytes, cursor + 2)
+          : readU32BE(bytes, cursor + 2);
+        const parent = endian === "le"
+          ? readU16LE(bytes, cursor + 6)
+          : readU16BE(bytes, cursor + 6);
+        entries.push({
+          name: decodeAscii(bytes, cursor + 8, nameLength),
+          extendedAttributeLength: bytes[cursor + 1],
+          extent,
+          parent,
+          extentOffset: offset + cursor + 2
+        });
+        cursor += 8 + nameLength + (nameLength % 2);
+      }
+      return entries;
+    }
+
+    function makeDirectoryRecord(identifier, extent, size, flags = 0) {
+      const idBytes = identifier instanceof Uint8Array
+        ? identifier
+        : Uint8Array.from(identifier, character => character.charCodeAt(0));
+      const recordLength = 33 + idBytes.length + (idBytes.length % 2 === 0 ? 1 : 0);
+      const record = new Uint8Array(recordLength);
+      record[0] = recordLength;
+      writeU32LE(record, 2, extent);
+      writeU32BE(record, 6, extent);
+      writeU32LE(record, 10, size);
+      writeU32BE(record, 14, size);
+      const now = new Date();
+      record.set([
+        Math.max(0, Math.min(255, now.getUTCFullYear() - 1900)),
+        now.getUTCMonth() + 1,
+        now.getUTCDate(),
+        now.getUTCHours(),
+        now.getUTCMinutes(),
+        now.getUTCSeconds(),
+        0
+      ], 18);
+      record[25] = flags;
+      record[28] = 1;
+      record[30] = 1;
+      record[31] = 0;
+      record[32] = idBytes.length;
+      record.set(idBytes, 33);
+      return record;
+    }
+
+    async function readVolumeDescriptor(file, sector) {
+      const descriptor = await readRange(file, sector * SECTOR_SIZE, SECTOR_SIZE);
+      if (decodeAscii(descriptor, 1, 5) !== "CD001" || descriptor[6] !== 1) {
+        fail("Unsupported ISO descriptor sequence; expected standard ISO9660 descriptors.");
+      }
+      return descriptor;
+    }
+
+    async function inspectIso(file) {
+      if (file.size < 17 * SECTOR_SIZE || file.size % SECTOR_SIZE !== 0) {
+        fail("The selected file is too small or is not a whole-sector ISO image.");
+      }
+      let primary = null;
+      let terminated = false;
+      for (let sector = 16; sector < 272; sector++) {
+        const descriptor = await readVolumeDescriptor(file, sector);
+        const type = descriptor[0];
+        if (type === 1) {
+          if (primary) fail("Unsupported ISO: multiple primary volume descriptors were found.");
+          primary = descriptor;
+        } else if (type === 2) {
+          fail("This page does not support supplementary descriptors such as Joliet.");
+        } else if (type === 3) {
+          fail("This page does not support ISO partition descriptors.");
+        } else if (type === 255) {
+          terminated = true;
+          break;
+        } else if (type !== 0) {
+          fail("Unsupported ISO volume descriptor type.");
+        }
+      }
+      if (!terminated || !primary) fail("No complete ISO9660 primary volume descriptor was found.");
+
+      const volumeSectors = readBothU32(primary, 80, "volume size");
+      if (volumeSectors <= 17 || volumeSectors !== file.size / SECTOR_SIZE) {
+        fail("Unsupported ISO: the declared volume size does not match the selected file.");
+      }
+      const pathTableSize = readBothU32(primary, 132, "path table size");
+      if (pathTableSize < 8 || pathTableSize > MAX_DIRECTORY_SIZE) {
+        fail("Unsupported ISO path table size.");
+      }
+      const rootRecordLength = primary[156];
+      if (rootRecordLength < 34 || 156 + rootRecordLength > primary.length ||
+          primary[188] !== 1 || primary[189] !== 0 || (primary[181] & 2) === 0) {
+        fail("Invalid ISO: primary descriptor has an invalid root directory record.");
+      }
+      const rootExtent = readBothU32(primary, 158, "root directory extent");
+      const rootSize = readBothU32(primary, 166, "root directory size");
+      if (primary[157] !== 0 || !rootSize || rootSize > MAX_DIRECTORY_SIZE ||
+          rootExtent >= volumeSectors ||
+          rootExtent * SECTOR_SIZE + rootSize > volumeSectors * SECTOR_SIZE) {
+        fail("Unsupported or invalid ISO root directory size or location.");
+      }
+
+      const pathTables = [];
+      for (const [offset, endian] of [[140, "le"], [144, "le"], [148, "be"], [152, "be"]]) {
+        const location = endian === "le"
+          ? readU32LE(primary, offset)
+          : readU32BE(primary, offset);
+        if (!location) continue;
+        const tableOffset = location * SECTOR_SIZE;
+        if (location >= volumeSectors ||
+            tableOffset + pathTableSize > volumeSectors * SECTOR_SIZE) {
+          fail("Invalid ISO: a path table is outside the selected file.");
+        }
+        const tableBytes = await readRange(file, tableOffset, pathTableSize);
+        const entries = parsePathTable(tableBytes, tableOffset, endian);
+        const rootEntry = tableBytes.subarray(0, 8);
+        const tableRootExtent = endian === "le"
+          ? readU32LE(rootEntry, 2)
+          : readU32BE(rootEntry, 2);
+        const parentDirectory = endian === "le"
+          ? readU16LE(rootEntry, 6)
+          : readU16BE(rootEntry, 6);
+        if (rootEntry[0] !== 1 || rootEntry[1] !== 0 ||
+            tableRootExtent !== rootExtent || parentDirectory !== 1) {
+          fail("Unsupported ISO path table layout.");
+        }
+        pathTables.push({ offset: tableOffset, descriptorOffset: offset, endian, entries });
+      }
+      if (pathTables.length === 0) fail("The ISO does not contain a usable path table.");
+
+      const rootBytes = await readRange(file, rootExtent * SECTOR_SIZE, rootSize);
+      return { primary, volumeSectors, pathTables, rootExtent, rootSize, rootBytes };
+    }
+
+    async function readIsoTree(file) {
+      const metadata = await inspectIso(file);
+      const volumeSize = metadata.volumeSectors * SECTOR_SIZE;
+      const visitedDirectories = new Set();
+      let entryCount = 0;
+
+      async function readDirectory(extent, size, depth, ancestors) {
+        if (depth > 64) fail("ISO directory nesting exceeds the supported limit.");
+        const key = `${extent}:${size}`;
+        if (ancestors.has(key)) fail("Invalid ISO: a directory contains a recursive reference.");
+        const start = extent * SECTOR_SIZE;
+        if (!size || size > MAX_DIRECTORY_SIZE || start + size > volumeSize) {
+          fail("Invalid ISO: a directory is outside the declared volume.");
+        }
+        if (visitedDirectories.has(key)) fail("Invalid ISO: duplicate directory extent.");
+        visitedDirectories.add(key);
+
+        const bytes = await readRange(file, start, size);
+        const entries = parseDirectory(bytes);
+        entryCount += entries.length;
+        if (entryCount > 100000) fail("ISO contains too many entries to display safely.");
+        const nextAncestors = new Set(ancestors);
+        nextAncestors.add(key);
+        const directory = {
+          name: "/",
+          identifier: null,
+          directory: true,
+          extent,
+          size,
+          rawBytes: bytes,
+          ...findDirectorySpecialOffsets(bytes),
+          children: []
+        };
+        for (const entry of entries) {
+          if ((entry.flags & 0x80) !== 0) {
+            fail("This ISO contains multi-extent files, which the tree viewer does not support.");
+          }
+          if (entry.unitSize !== 0 || entry.gapSize !== 0) {
+            fail("This ISO contains interleaved files, which the tree viewer does not support.");
+          }
+          const dataOffset = (entry.extent + entry.extendedAttributeLength) * SECTOR_SIZE;
+          if (entry.extent >= metadata.volumeSectors ||
+              dataOffset + entry.size > volumeSize) {
+            fail("Invalid ISO: a file or directory is outside the declared volume.");
+          }
+          const child = {
+            name: entry.identifier.replace(/;\d+$/, ""),
+            identifier: entry.identifier,
+            record: entry,
+            parent: directory,
+            directory: (entry.flags & 2) !== 0,
+            extent: entry.extent + entry.extendedAttributeLength,
+            offset: dataOffset,
+            size: entry.size,
+            children: []
+          };
+          if (child.directory) {
+            if (entry.extendedAttributeLength !== 0) {
+              fail("This ISO contains directories with extended attributes, which cannot be relocated safely.");
+            }
+            const childDirectory = await readDirectory(child.extent, entry.size, depth + 1, nextAncestors);
+            Object.assign(child, childDirectory, {
+              name: child.name,
+              identifier: child.identifier,
+              record: child.record,
+              parent: directory,
+              directory: true
+            });
+          }
+          directory.children.push(child);
+        }
+        return directory;
+      }
+
+      const root = await readDirectory(metadata.rootExtent, metadata.rootSize, 0, new Set());
+      const pathTableNodes = new Map();
+      for (const table of metadata.pathTables) {
+        if (!table.entries.length) {
+          fail("Invalid ISO: path table entry count is inconsistent with the directory tree.");
+        }
+        const nodes = [];
+        for (let index = 0; index < table.entries.length; index++) {
+          const pathEntry = table.entries[index];
+          let node;
+          if (index === 0) {
+            if (pathEntry.name !== "\0" || pathEntry.parent !== 1 ||
+                pathEntry.extendedAttributeLength !== 0) {
+              fail("Invalid ISO: malformed root path table entry.");
+            }
+            node = root;
+          } else {
+            if (pathEntry.parent < 1 || pathEntry.parent > index) {
+              fail("Invalid ISO: invalid path table parent index.");
+            }
+            if (pathEntry.extendedAttributeLength !== 0) {
+              fail("This ISO contains directories with extended attributes, which cannot be relocated safely.");
+            }
+            const parent = nodes[pathEntry.parent - 1];
+            const matches = parent.children.filter(child =>
+              child.directory && nameKey(child.name) === nameKey(pathEntry.name)
+            );
+            if (matches.length !== 1) {
+              fail("Unsupported ISO: path table does not match the directory tree.");
+            }
+            node = matches[0];
+          }
+          if (pathEntry.extent !== node.extent) {
+            fail("Invalid ISO: path table directory extent does not match the directory tree.");
+          }
+          nodes.push(node);
+          pathEntry.node = node;
+        }
+        const existingNodes = pathTableNodes.get(table.entries.length);
+        if (existingNodes && existingNodes.some((node, index) => node !== nodes[index])) {
+          fail("Unsupported ISO: path tables have inconsistent directory order.");
+        }
+        pathTableNodes.set(table.entries.length, nodes);
+      }
+      const directoryCount = [...visitedDirectories].length;
+      if ([...pathTableNodes.keys()].some(count => count !== directoryCount)) {
+        fail("Invalid ISO: path table does not contain every directory.");
+      }
+      return { root, count: entryCount, metadata };
+    }
+
+    function downloadIsoFile(file, entry) {
+      downloadBlob(file.slice(
+        entry.offset,
+        entry.offset + entry.size,
+        "application/octet-stream"
+      ), entry.name || "file");
+    }
+
+    function downloadBlob(blob, filename) {
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      document.body.append(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    }
+
+    function formatFileSize(size) {
+      if (size < 1024) return `${size} bytes`;
+      if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+      return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+    }
+
+    function renderExplorer() {
+      if (!loadedTree || !currentFolder) return;
+      const path = [];
+      function findPath(node, target, current) {
+        if (node === target) {
+          path.push(...current, node);
+          return true;
+        }
+        for (const child of node.children) {
+          if (child.directory && findPath(child, target, [...current, node])) return true;
+        }
+        return false;
+      }
+      findPath(loadedTree.root, currentFolder, []);
+      for (const folder of path.slice(0, -1)) folder._expanded = true;
+
+      breadcrumbs.replaceChildren();
+      for (const [index, folder] of path.entries()) {
+        if (index > 0) {
+          const separator = document.createElement("span");
+          separator.className = "crumb-separator";
+          separator.setAttribute("aria-hidden", "true");
+          separator.textContent = "›";
+          breadcrumbs.append(separator);
+        }
+        const crumb = document.createElement("button");
+        crumb.type = "button";
+        crumb.textContent = index === 0 ? loadedTreeFile.name : folder.name;
+        crumb.setAttribute("aria-current", index === path.length - 1 ? "location" : "false");
+        crumb.addEventListener("click", () => {
+          currentFolder = folder;
+          renderExplorer();
+        });
+        breadcrumbs.append(crumb);
+      }
+      updateDestinationStatus();
+
+      renderFolderTree(loadedTree.root, fileTree);
+      const sortedEntries = [...currentFolder.children].sort((a, b) => {
+        if (a.directory !== b.directory) return a.directory ? -1 : 1;
+        return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" });
+      });
+      fileList.replaceChildren();
+      emptyFolder.hidden = sortedEntries.length !== 0;
+      for (const entry of sortedEntries) {
+        const item = document.createElement("li");
+        item.className = "file-row";
+        const name = document.createElement("span");
+        name.className = "file-name";
+        const icon = document.createElement("span");
+        icon.className = "file-icon";
+        icon.setAttribute("aria-hidden", "true");
+        icon.textContent = entry.directory ? "📁" : "📄";
+        const label = document.createElement("span");
+        label.className = "file-name-text";
+        label.textContent = entry.name;
+        name.append(icon, label);
+
+        const size = document.createElement("span");
+        size.className = "file-size";
+        size.textContent = entry.directory ? "" : formatFileSize(entry.size);
+        item.append(name, size);
+
+        if (entry.directory) {
+          item.tabIndex = 0;
+          item.setAttribute("role", "button");
+          item.setAttribute("aria-label", `Open folder ${entry.name}`);
+          item.addEventListener("click", event => {
+            if (event.target.closest("button")) return;
+            currentFolder = entry;
+            renderExplorer();
+          });
+          item.addEventListener("keydown", event => {
+            if (event.target.closest("button")) return;
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              currentFolder = entry;
+              renderExplorer();
+            }
+          });
+        }
+        const actions = document.createElement("span");
+        actions.className = "row-actions";
+        if (!entry.directory) {
+          const extract = document.createElement("button");
+          extract.type = "button";
+          extract.className = "file-action";
+          extract.textContent = "Extract";
+          extract.setAttribute("aria-label", `Extract ${entry.name}`);
+          extract.addEventListener("click", event => {
+            event.stopPropagation();
+            if (entry.payload) downloadBlob(entry.payload, entry.sourceName || entry.name);
+            else if (loadedTreeFile) downloadIsoFile(loadedTreeFile, entry);
+          });
+          actions.append(extract);
+        }
+        const actionButton = document.createElement("button");
+        actionButton.type = "button";
+        actionButton.className = "file-action delete-action";
+        actionButton.textContent = entry.directory ? "Remove" : "Delete";
+        actionButton.setAttribute(
+          "aria-label",
+          entry.directory ? `Remove directory ${entry.name}` : `Delete file ${entry.name}`
+        );
+        actionButton.addEventListener("click", event => {
+          event.stopPropagation();
+          if (entry.directory && isDescendantOrSame(currentFolder, entry)) {
+            currentFolder = entry.parent;
+          }
+          try {
+            queueAction({
+              type: entry.directory ? "remove-directory" : "delete-file",
+              path: selectedFolderPath(currentFolder),
+              identifier: entry.identifier,
+              display: entry.directory
+                ? `Remove directory "${entry.name}" and its contents from ${folderDisplayPath(currentFolder)}`
+                : `Delete file "${entry.name}" from ${folderDisplayPath(currentFolder)}`
+            });
+          } catch (error) {
+            showActionError(error);
+          }
+        });
+        actions.append(actionButton);
+        item.append(actions);
+        fileList.append(item);
+      }
+      explorerFooter.textContent =
+        `${sortedEntries.length} items in this folder · ${currentFolder.name === "/" ? "Root" : currentFolder.name}`;
+    }
+
+    function isDescendantOrSame(node, ancestor) {
+      for (let current = node; current; current = current.parent) {
+        if (current === ancestor) return true;
+      }
+      return false;
+    }
+
+    function renderFolderTree(node, parent) {
+      parent.replaceChildren();
+      const item = document.createElement("div");
+      item.className = "tree-row";
+      item.setAttribute("aria-current", node === currentFolder ? "true" : "false");
+      if (node.children.length) {
+        const toggle = document.createElement("button");
+        toggle.type = "button";
+        toggle.className = "tree-toggle";
+        toggle.textContent = node._expanded ? "⌄" : "›";
+        toggle.setAttribute("aria-label", `${node._expanded ? "Collapse" : "Expand"} ${node.name}`);
+        toggle.setAttribute("aria-expanded", String(Boolean(node._expanded)));
+        toggle.addEventListener("click", () => {
+          node._expanded = !node._expanded;
+          renderExplorer();
+        });
+        item.append(toggle);
+      } else {
+        const spacer = document.createElement("span");
+        spacer.className = "tree-spacer";
+        item.append(spacer);
+      }
+      const folder = document.createElement("button");
+      folder.type = "button";
+      folder.className = "folder-name";
+      folder.textContent = node === loadedTree.root ? loadedTreeFile.name : node.name;
+      folder.setAttribute("aria-current", node === currentFolder ? "page" : "false");
+      folder.addEventListener("click", () => {
+        currentFolder = node;
+        renderExplorer();
+      });
+      item.append(folder);
+      parent.append(item);
+
+      if (node._expanded && node.children.length) {
+        const list = document.createElement("ul");
+        parent.append(list);
+        for (const child of node.children) {
+          if (!child.directory) continue;
+          const childItem = document.createElement("li");
+          list.append(childItem);
+          renderFolderTree(child, childItem);
+        }
+      }
+    }
+
+    function writeRecordLocation(bytes, offset, extent, size) {
+      writeU32LE(bytes, offset + 2, extent);
+      writeU32BE(bytes, offset + 6, extent);
+      if (size !== undefined) {
+        writeU32LE(bytes, offset + 10, size);
+        writeU32BE(bytes, offset + 14, size);
+      }
+    }
+
+    function updateRecordTimestamp(bytes, offset) {
+      const now = new Date();
+      bytes.set([
+        Math.max(0, Math.min(255, now.getUTCFullYear() - 1900)),
+        now.getUTCMonth() + 1,
+        now.getUTCDate(),
+        now.getUTCHours(),
+        now.getUTCMinutes(),
+        now.getUTCSeconds(),
+        0
+      ], offset + 18);
+    }
+
+    function selectedFolderPath(folder) {
+      const path = [];
+      for (let node = folder; node && node.parent; node = node.parent) {
+        path.unshift(node.identifier);
+      }
+      return path;
+    }
+
+    function folderAtPath(root, path) {
+      let folder = root;
+      for (const identifier of path) {
+        const matches = folder.children.filter(entry =>
+          entry.directory && nameKey(entry.identifier) === nameKey(identifier)
+        );
+        if (matches.length !== 1) fail(`Folder ${identifier} is unavailable while applying queued actions.`);
+        folder = matches[0];
+      }
+      return folder;
+    }
+
+    function applyAction(root, action) {
+      if (!action || !Array.isArray(action.path)) {
+        fail("A queued action has an invalid destination folder.");
+      }
+      if (typeof action.identifier !== "string" || !action.identifier) {
+        fail("A queued action has an invalid filename or directory name.");
+      }
+      const folder = folderAtPath(root, action.path);
+      const matching = folder.children.filter(entry =>
+        nameKey(entry.identifier) === nameKey(action.identifier)
+      );
+      if (action.type === "create-directory") {
+        if (matching.length) fail(`An item named ${action.name} already exists in that folder.`);
+        const directory = {
+          name: action.name,
+          identifier: action.identifier,
+          directory: true,
+          record: null,
+          parent: folder,
+          extent: 0,
+          size: 0,
+          rawBytes: null,
+          dotOffset: 0,
+          parentOffset: 0,
+          children: []
+        };
+        folder.children.push(directory);
+        return;
+      }
+
+      if (action.type === "remove-directory" || action.type === "delete-file") {
+        if (matching.length !== 1) fail(`Could not find ${action.identifier} for the queued action.`);
+        const entry = matching[0];
+        if (action.type === "remove-directory" && !entry.directory) {
+          fail(`${action.identifier} is not a directory.`);
+        }
+        if (action.type === "delete-file" && entry.directory) {
+          fail(`${action.identifier} is a directory, not a file.`);
+        }
+        folder.children.splice(folder.children.indexOf(entry), 1);
+        return;
+      }
+
+      if (action.type === "add-file") {
+        if (!action.payload || typeof action.payload.name !== "string") {
+          fail("A queued add-file action is missing its local file.");
+        }
+        if (matching.length > 1) fail(`More than one item matches ${action.identifier}.`);
+        if (matching.length === 1 && matching[0].directory) {
+          fail(`A directory named ${action.payload.name} already exists in that folder.`);
+        }
+        if (matching.length === 1) {
+          matching[0].payload = action.payload;
+          matching[0].sourceName = action.payload.name;
+          matching[0].size = action.payload.size;
+          return;
+        }
+        folder.children.push({
+          name: action.payload.name,
+          identifier: action.identifier,
+          directory: false,
+          record: null,
+          parent: folder,
+          payload: action.payload,
+          sourceName: action.payload.name,
+          size: action.payload.size,
+          children: []
+        });
+        return;
+      }
+      fail(`Unknown queued action: ${action.type}.`);
+    }
+
+    function queueAction(action) {
+      if (!loadedTree) fail("Load an ISO before queuing actions.");
+      applyAction(loadedTree.root, action);
+      queuedActions.push(action);
+      updatedIsoName = null;
+      cueButton.hidden = true;
+      renderActionLog();
+      renderExplorer();
+      status.textContent = `Queued action ${queuedActions.length}: ${action.display}.`;
+      status.removeAttribute("data-error");
+      downloadIsoButton.disabled = false;
+    }
+
+    function renderActionLog() {
+      actionLog.replaceChildren();
+      if (queuedActions.length === 0) {
+        const item = document.createElement("li");
+        item.className = "empty-log";
+        item.textContent = "No actions queued.";
+        actionLog.append(item);
+        downloadIsoButton.disabled = true;
+        return;
+      }
+      queuedActions.forEach((action, index) => {
+        const item = document.createElement("li");
+        item.textContent = `${index + 1}. ${action.display}`;
+        actionLog.append(item);
+      });
+      downloadIsoButton.disabled = false;
+    }
+
+    function showActionError(error) {
+      const message = error instanceof Error ? error.message : "Could not queue the action.";
+      status.textContent = message;
+      status.dataset.error = "true";
+    }
+
+    function folderDisplayPath(folder) {
+      const names = [];
+      for (let node = folder; node && node.parent; node = node.parent) {
+        names.unshift(node.name);
+      }
+      return `/${names.join("/")}`;
+    }
+
+    function updateDestinationStatus(filename = null, folder = currentFolder) {
+      if (!loadedTreeFile || !folder) {
+        destinationStatus.textContent = "Choose an ISO image to select a destination folder.";
+        return;
+      }
+      const path = folderDisplayPath(folder);
+      destinationStatus.textContent = filename
+        ? `Adding "${filename}" to ${path}.`
+        : `New files will be added to ${path} using their local filenames.`;
+    }
+
+    function directoryEntries(root) {
+      const result = [];
+      const queue = [root];
+      while (queue.length) {
+        const directory = queue.shift();
+        result.push(directory);
+        const children = directory.children
+          .filter(child => child.directory)
+          .sort((a, b) => a.identifier < b.identifier ? -1 : a.identifier > b.identifier ? 1 : 0);
+        queue.push(...children);
+      }
+      return result;
+    }
+
+    function directoryRecordBytes(directory, type) {
+      const existingRecord = type === "dot" ? directory.dotRecord : directory.parentRecord;
+      if (existingRecord) return existingRecord.slice();
+      return makeDirectoryRecord(
+        Uint8Array.of(type === "dot" ? 0 : 1),
+        0,
+        0,
+        2
+      );
+    }
+
+    function placeDirectoryRecords(records, padToSector = false) {
+      let offset = 0;
+      for (const record of records) {
+        if (record.length > SECTOR_SIZE) fail("An ISO directory record exceeds one sector.");
+        if (offset % SECTOR_SIZE + record.length > SECTOR_SIZE) {
+          offset = Math.ceil(offset / SECTOR_SIZE) * SECTOR_SIZE;
+        }
+        record.outputOffset = offset;
+        offset += record.length;
+      }
+      return padToSector ? Math.ceil(offset / SECTOR_SIZE) * SECTOR_SIZE : offset;
+    }
+
+    function makeDirectoryBytes(directory) {
+      const dot = directoryRecordBytes(directory, "dot");
+      const parent = directoryRecordBytes(directory, "parent");
+      const childRecords = [];
+      for (const child of directory.children) {
+        let record;
+        if (child.record) {
+          record = child.record.recordBytes.slice();
+        } else if (child.directory) {
+          record = makeDirectoryRecord(child.identifier, child.outputExtent, child.outputSize, 2);
+        } else {
+          record = makeDirectoryRecord(child.identifier, child.outputExtent, child.size);
+        }
+        if (child.directory) {
+          writeRecordLocation(record, 0, child.outputExtent, child.outputSize);
+        } else {
+          writeRecordLocation(record, 0, child.outputExtent, child.size);
+          if (child.payload) updateRecordTimestamp(record, 0);
+        }
+        childRecords.push(record);
+      }
+      const records = [dot, parent, ...childRecords];
+      const size = placeDirectoryRecords(records, true);
+      const bytes = new Uint8Array(size);
+      for (const record of records) bytes.set(record, record.outputOffset);
+      const parentExtent = directory.parent ? directory.parent.outputExtent : directory.outputExtent;
+      const parentSize = directory.parent ? directory.parent.outputSize : directory.outputSize;
+      writeRecordLocation(bytes, dot.outputOffset, directory.outputExtent, directory.outputSize);
+      writeRecordLocation(bytes, parent.outputOffset, parentExtent, parentSize);
+      return bytes;
+    }
+
+    function directoryRecordSize(directory) {
+      const records = [
+        directoryRecordBytes(directory, "dot"),
+        directoryRecordBytes(directory, "parent"),
+        ...directory.children.map(child => child.record
+          ? child.record.recordBytes
+          : makeDirectoryRecord(
+              child.identifier,
+              0,
+              child.size,
+              child.directory ? 2 : 0
+            ))
+      ];
+      return placeDirectoryRecords(records, true);
+    }
+
+    function encodePathTable(directories, endian) {
+      const indexByDirectory = new Map(directories.map((directory, index) => [directory, index + 1]));
+      const size = directories.reduce((total, directory, index) => {
+        const nameLength = index === 0 ? 1 : directory.identifier.length;
+        return total + 8 + nameLength + (nameLength % 2);
+      }, 0);
+      const bytes = new Uint8Array(size);
+      let offset = 0;
+      directories.forEach((directory, index) => {
+        const name = index === 0
+          ? Uint8Array.of(0)
+          : Uint8Array.from(directory.identifier, character => character.charCodeAt(0));
+        bytes[offset] = name.length;
+        bytes[offset + 1] = 0;
+        if (endian === "le") {
+          writeU32LE(bytes, offset + 2, directory.outputExtent);
+          writeU16LE(bytes, offset + 6, index === 0 ? 1 : indexByDirectory.get(directory.parent));
+        } else {
+          writeU32BE(bytes, offset + 2, directory.outputExtent);
+          bytes[offset + 6] = (index === 0 ? 1 : indexByDirectory.get(directory.parent)) >>> 8;
+          bytes[offset + 7] = (index === 0 ? 1 : indexByDirectory.get(directory.parent)) & 0xff;
+        }
+        bytes.set(name, offset + 8);
+        offset += 8 + name.length + (name.length % 2);
+      });
+      return bytes;
+    }
+
+    function writeU16LE(bytes, offset, value) {
+      bytes[offset] = value & 0xff;
+      bytes[offset + 1] = (value >>> 8) & 0xff;
+    }
+
+    function writeU16BE(bytes, offset, value) {
+      bytes[offset] = (value >>> 8) & 0xff;
+      bytes[offset + 1] = value & 0xff;
+    }
+
+    async function createIso(file, actions) {
+      if (!Array.isArray(actions)) {
+        fail("Queued ISO actions are invalid; add at least one action before downloading.");
+      }
+      const tree = await readIsoTree(file);
+      const metadata = tree.metadata;
+      for (const action of actions) applyAction(tree.root, action);
+
+      const directories = directoryEntries(tree.root);
+      for (const directory of directories) {
+        if (!directory.rawBytes) {
+          directory.dotOffset = 0;
+          directory.parentOffset = 0;
+          directory.dotRecord = null;
+          directory.parentRecord = null;
+        } else {
+          directory.dotRecord = directory.rawBytes.slice(
+            directory.dotOffset,
+            directory.dotOffset + directory.rawBytes[directory.dotOffset]
+          );
+          directory.parentRecord = directory.rawBytes.slice(
+            directory.parentOffset,
+            directory.parentOffset + directory.rawBytes[directory.parentOffset]
+          );
+        }
+        if (directory.rawBytes &&
+            (directory.rawBytes[directory.dotOffset + 1] !== 0 ||
+             directory.rawBytes[directory.parentOffset + 1] !== 0)) {
+          fail("Cannot safely relocate directories with extended attributes.");
+        }
+      }
+
+      for (const directory of directories) {
+        for (const entry of directory.children) {
+          if (entry.directory) continue;
+          if (entry.size > 0xffffffff) {
+            fail(`File ${entry.name} exceeds the ISO9660 4 GiB file-size limit.`);
+          }
+          if (entry.record && entry.record.extendedAttributeLength !== 0) {
+            fail(`File ${entry.name} uses extended attributes, which this ISO writer cannot relocate safely.`);
+          }
+        }
+      }
+
+      const orderedChildren = directory => [...directory.children].sort((a, b) =>
+        a.identifier < b.identifier ? -1 : a.identifier > b.identifier ? 1 : 0
+      );
+      for (const directory of directories) {
+        directory.children = orderedChildren(directory);
+        directory.outputSize = directoryRecordSize(directory);
+      }
+
+      const pathTables = metadata.pathTables.map(table => ({
+        endian: table.endian,
+        descriptorOffset: table.descriptorOffset
+      }));
+      if (!pathTables.some(table => table.endian === "le") ||
+          !pathTables.some(table => table.endian === "be")) {
+        fail("The ISO must contain both mandatory Type L and Type M path tables.");
+      }
+
+      const pathTableSize = directories.reduce((total, directory, index) => {
+        const nameLength = index === 0 ? 1 : directory.identifier.length;
+        return total + 8 + nameLength + (nameLength % 2);
+      }, 0);
+      let nextLba = 19;
+      for (const table of pathTables) {
+        table.outputLba = nextLba;
+        nextLba += Math.ceil(pathTableSize / SECTOR_SIZE);
+      }
+      for (const directory of directories) {
+        directory.outputExtent = nextLba;
+        nextLba += directory.outputSize / SECTOR_SIZE;
+      }
+
+      const fileParts = [];
+      for (const directory of directories) {
+        for (const entry of orderedChildren(directory)) {
+          if (entry.directory) continue;
+          if (entry.payload && entry.payload.size > 0xffffffff) {
+            fail(`File ${entry.name} exceeds the ISO9660 4 GiB file-size limit.`);
+          }
+          entry.outputExtent = nextLba;
+          const allocatedSize = Math.max(
+            SECTOR_SIZE,
+            Math.ceil(entry.size / SECTOR_SIZE) * SECTOR_SIZE
+          );
+          fileParts.push(entry.payload ||
+            file.slice(entry.offset, entry.offset + entry.size));
+          fileParts.push(new Uint8Array(allocatedSize - entry.size));
+          nextLba += allocatedSize / SECTOR_SIZE;
+        }
+      }
+
+      if (nextLba > 0xffffffff) fail("The resulting ISO exceeds the ISO9660 volume-size limit.");
+
+      const directoryParts = [];
+      for (const directory of directories) {
+        const bytes = makeDirectoryBytes(directory);
+        if (bytes.length !== directory.outputSize) {
+          fail(`ISO directory size calculation failed for ${directory.name}.`);
+        }
+        directoryParts.push(bytes);
+      }
+
+      const pathTableParts = [];
+      for (const table of pathTables) {
+        table.bytes = encodePathTable(directories, table.endian);
+        if (table.bytes.length !== pathTableSize) {
+          fail("ISO path table size calculation is inconsistent.");
+        }
+        pathTableParts.push(table.bytes);
+        const paddedSize = Math.ceil(table.bytes.length / SECTOR_SIZE) * SECTOR_SIZE;
+        pathTableParts.push(new Uint8Array(paddedSize - table.bytes.length));
+      }
+
+      const volumeSize = nextLba;
+      const patchedPrimary = metadata.primary.slice();
+      writeU32LE(patchedPrimary, 80, volumeSize);
+      writeU32BE(patchedPrimary, 84, volumeSize);
+      writeU32LE(patchedPrimary, 132, pathTableSize);
+      writeU32BE(patchedPrimary, 136, pathTableSize);
+      writeU32LE(patchedPrimary, 158, tree.root.outputExtent);
+      writeU32BE(patchedPrimary, 162, tree.root.outputExtent);
+      writeU32LE(patchedPrimary, 166, tree.root.outputSize);
+      writeU32BE(patchedPrimary, 170, tree.root.outputSize);
+      for (const table of pathTables) {
+        const pointerOffset = table.descriptorOffset;
+        if (table.endian === "le") writeU32LE(patchedPrimary, pointerOffset, table.outputLba);
+        else writeU32BE(patchedPrimary, pointerOffset, table.outputLba);
+      }
+
+      const output = new Blob([
+        file.slice(0, 16 * SECTOR_SIZE),
+        patchedPrimary,
+        file.slice(17 * SECTOR_SIZE, 19 * SECTOR_SIZE),
+        ...pathTableParts,
+        ...directoryParts,
+        ...fileParts
+      ], { type: "application/x-iso9660-image" });
+      if (output.size !== volumeSize * SECTOR_SIZE) fail("ISO output size verification failed.");
+      return output;
+    }
+  </script>
+</body>
+</html>
